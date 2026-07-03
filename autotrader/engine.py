@@ -27,6 +27,10 @@ class Engine:
 
     # ---------- 各阶段动作 ----------
     async def do_gate_check(self, d):
+        if self.db.get_control("pause_buys") == "1":
+            self.notify.send(f"[{d}] 开仓已被手动暂停 (面板开关), 今晚不买入。卖出链正常。", "warn")
+            self.db.record_run(str(d), False, 0, 0, 0, 0, "手动暂停")
+            return False
         passed, vix, spy, reason = check_gate(self.cfg)
         if passed is None:
             self.notify.send(f"闸门数据失败, 今晚默认不开仓。{reason}", "warn")

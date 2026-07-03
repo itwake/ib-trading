@@ -9,40 +9,54 @@
           --green:#2fbf71; --red:#e05252; --amber:#e0a52e; --blue:#4a90d9; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
-  header { padding:14px 24px; border-bottom:1px solid var(--border); display:flex; gap:16px; align-items:center; flex-wrap:wrap;}
-  header h1 { font-size:18px; margin:0; font-weight:600; }
+  header { padding:12px 24px; border-bottom:1px solid var(--border); display:flex; gap:12px; align-items:center; flex-wrap:wrap;}
+  header h1 { font-size:18px; margin:0 12px 0 0; font-weight:600; }
   .pill { padding:2px 10px; border-radius:12px; font-size:12px; border:1px solid var(--border); }
   .ok { color:var(--green); border-color:var(--green); }
   .bad { color:var(--red); border-color:var(--red); }
-  nav { display:flex; gap:4px; padding:10px 24px 0; border-bottom:1px solid var(--border); }
+  .warn { color:var(--amber); border-color:var(--amber); }
+  nav { display:flex; gap:4px; padding:10px 24px 0; border-bottom:1px solid var(--border); overflow-x:auto; }
   nav button { background:none; border:none; color:var(--muted); padding:8px 14px; cursor:pointer; font-size:14px;
-               border-bottom:2px solid transparent; }
+               border-bottom:2px solid transparent; white-space:nowrap; }
   nav button.active { color:var(--text); border-bottom-color:var(--blue); }
-  main { padding:20px 24px; max-width:1200px; margin:0 auto; }
-  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:20px; }
+  main { padding:20px 24px; max-width:1240px; margin:0 auto; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:12px; margin-bottom:18px; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 16px; }
   .card .k { color:var(--muted); font-size:12px; }
-  .card .v { font-size:22px; font-weight:600; margin-top:2px; }
+  .card .v { font-size:21px; font-weight:600; margin-top:2px; }
+  .card .s { font-size:12px; color:var(--muted); margin-top:2px; }
   table { width:100%; border-collapse:collapse; background:var(--card); border-radius:8px; overflow:hidden; font-size:13px; }
   th, td { padding:7px 12px; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; }
   th { color:var(--muted); font-weight:500; background:#161b22; position:sticky; top:0; }
   .pos { color:var(--green); } .neg { color:var(--red); }
   .section { display:none; } .section.active { display:block; }
-  .chartbox { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:20px; height:300px; }
+  .chartbox { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:18px; height:280px; }
   h3 { font-size:15px; margin:18px 0 8px; color:var(--muted); font-weight:500; }
   .scroll { max-height:480px; overflow:auto; border-radius:8px; }
+  .btn { background:var(--card); border:1px solid var(--border); color:var(--text); border-radius:6px;
+         padding:6px 14px; cursor:pointer; font-size:13px; }
+  .btn.danger { border-color:var(--red); color:var(--red); }
+  .btn.safe { border-color:var(--green); color:var(--green); }
+  .filters { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+  .filters .btn.on { border-color:var(--blue); color:var(--blue); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:800px){ .grid2{ grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>ib-trading 观测面板</h1>
+  <h1>ib-trading</h1>
   <span class="pill" id="mode">…</span>
   <span class="pill" id="gw">网关…</span>
+  <span class="pill" id="gatepill">闸门…</span>
   <span class="pill" id="clock">…</span>
+  <span class="pill" id="countdown">…</span>
+  <span style="flex:1"></span>
+  <button class="btn" id="pauseBtn">…</button>
 </header>
 <nav>
   <button data-s="overview" class="active">总览</button>
-  <button data-s="lots">持仓与挂单</button>
+  <button data-s="lots">交易台账</button>
   <button data-s="history">全年历史</button>
   <button data-s="runs">每晚决策</button>
   <button data-s="events">事件日志</button>
@@ -50,17 +64,30 @@
 <main>
   <section id="overview" class="section active">
     <div class="cards" id="ov-cards"></div>
-    <h3>当前 lot 状态</h3>
-    <div class="scroll"><table id="ov-lots"></table></div>
-    <h3>今日/下一交易日事件表 <span id="ov-day" style="color:var(--muted)"></span></h3>
-    <div class="scroll"><table id="ov-sched"></table></div>
+    <div class="grid2">
+      <div>
+        <h3>持仓（延迟报价）</h3>
+        <div class="scroll"><table id="ov-lots"></table></div>
+      </div>
+      <div>
+        <h3>净值曲线（每日快照）</h3>
+        <div class="chartbox" style="height:240px"><canvas id="eq-chart"></canvas></div>
+        <h3>事件表 <span id="ov-day" style="color:var(--muted)"></span></h3>
+        <div class="scroll" style="max-height:220px"><table id="ov-sched"></table></div>
+      </div>
+    </div>
   </section>
   <section id="lots" class="section">
+    <div class="cards" id="l-cards"></div>
+    <div class="filters" id="l-filters"></div>
     <div class="scroll"><table id="t-lots"></table></div>
   </section>
   <section id="history" class="section">
     <div class="cards" id="h-cards"></div>
-    <div class="chartbox"><canvas id="h-chart"></canvas></div>
+    <div class="grid2">
+      <div class="chartbox"><canvas id="h-chart"></canvas></div>
+      <div class="chartbox"><canvas id="h-month"></canvas></div>
+    </div>
     <div class="scroll"><table id="t-history"></table></div>
   </section>
   <section id="runs" class="section">
@@ -75,61 +102,123 @@
 const $ = s => document.querySelector(s);
 const fmt$ = v => (v==null?'—':(v<0?'-':'')+'$'+Math.abs(Math.round(v)).toLocaleString());
 const cls = v => v>0?'pos':(v<0?'neg':'');
+const charts = {};
+function chart(id, cfg){ if(charts[id]) charts[id].destroy(); charts[id]=new Chart($(id.startsWith('#')?id:'#'+id), cfg); }
 function table(el, rows, cols) {
   if (!rows.length) { el.innerHTML = '<tr><td style="color:var(--muted)">暂无数据</td></tr>'; return; }
-  const head = '<tr>'+cols.map(c=>'<th>'+c[1]+'</th>').join('')+'</tr>';
-  const body = rows.map(r=>'<tr>'+cols.map(c=>{
-    let v = r[c[0]];
-    if (c[2]==='$') return `<td class="${cls(v)}">${fmt$(v)}</td>`;
-    return '<td>'+(v==null?'—':v)+'</td>';
-  }).join('')+'</tr>').join('');
-  el.innerHTML = head+body;
+  el.innerHTML = '<tr>'+cols.map(c=>'<th>'+c[1]+'</th>').join('')+'</tr>' +
+    rows.map(r=>'<tr>'+cols.map(c=>{
+      let v = r[c[0]];
+      if (c[2]==='$') return `<td class="${cls(v)}">${fmt$(v)}</td>`;
+      if (c[2]==='%') return `<td class="${cls(v)}">${v==null?'—':v.toFixed(2)+'%'}</td>`;
+      return '<td>'+(v==null?'—':v)+'</td>';
+    }).join('')+'</tr>').join('');
 }
-async function j(u){ return (await fetch(u)).json(); }
+async function j(u, opt){ return (await fetch(u, opt)).json(); }
+let nextEvent = null;
+setInterval(()=>{ if(!nextEvent) return;
+  const dt = (new Date(nextEvent.when) - new Date())/1000;
+  if (dt<0) { $('#countdown').textContent = nextEvent.name+' 执行中…'; return; }
+  const h = Math.floor(dt/3600), m = Math.floor(dt%3600/60);
+  $('#countdown').textContent = `下一动作 ${nextEvent.name} ${h}h${m}m`;
+}, 1000);
 
-async function loadOverview(){
-  const o = await j('/api/overview');
+async function header_(){
+  const [o, g, ctl] = await Promise.all([j('/api/overview'), j('/api/gate/live'), j('/api/control')]);
   $('#mode').textContent = 'mode: '+o.mode;
-  $('#mode').className = 'pill '+(o.mode==='live'?'ok':'');
+  $('#mode').className = 'pill '+(o.mode==='live'?'ok':'warn');
   $('#gw').textContent = o.gateway_ok?'网关正常':'网关无响应';
   $('#gw').className = 'pill '+(o.gateway_ok?'ok':'bad');
   $('#clock').textContent = o.now_et;
+  $('#gatepill').textContent = g.passed==null?'闸门: 数据失败':
+    (g.passed?`闸门放行 VIX ${g.vix?.toFixed(1)} SPY ${g.spy_pct?.toFixed(2)}%`
+             :`闸门拦截 VIX ${g.vix?.toFixed(1)} SPY ${g.spy_pct?.toFixed(2)}%`);
+  $('#gatepill').className = 'pill '+(g.passed?'ok':'warn');
+  const paused = ctl.pause_buys && ctl.pause_buys.value==='1';
+  $('#pauseBtn').textContent = paused?'▶ 恢复开仓':'⏸ 暂停开仓';
+  $('#pauseBtn').className = 'btn '+(paused?'safe':'danger');
+  $('#pauseBtn').onclick = async ()=>{
+    if (!confirm(paused?'恢复自动开仓？':'暂停自动开仓？(卖出链不受影响)')) return;
+    await j('/api/control/pause_buys/'+(paused?0:1), {method:'POST'}); header_();
+  };
+  return o;
+}
+async function loadOverview(){
+  const o = await header_();
+  const [qt, snaps] = await Promise.all([j('/api/quotes'), j('/api/snapshots')]);
   const s = o.snapshot||{}, r = o.last_run||{};
   $('#ov-cards').innerHTML = [
-    ['净值', s.netliq!=null?fmt$(s.netliq):'—'],
-    ['持仓市值', s.gross!=null?fmt$(s.gross):'—'],
-    ['可用资金', s.available!=null?fmt$(s.available):'—'],
-    ['未平 lot', o.open_lots.length],
-    ['最近闸门', r.date? (r.date+' '+(r.gate_pass?'放行':'拦截')) :'—'],
-    ['闸门参数', 'VIX≥'+o.gate_cfg.vix_min+' 或 SPY≤'+o.gate_cfg.spy_max_pct+'%'],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
-  table($('#ov-lots'), o.open_lots, [['lot_id','ID'],['symbol','代码'],['entry_date','入场日'],['qty','数量'],
-    ['entry_price','成本'],['target_price','目标价'],['state','状态']]);
+    ['净值', s.netliq!=null?fmt$(s.netliq):'—', s.date||''],
+    ['持仓市值', s.gross!=null?fmt$(s.gross):'—', (o.open_lots.length)+' 个 lot'],
+    ['浮动盈亏(延迟)', `<span class="${cls(qt.unrealized)}">${fmt$(qt.unrealized)}</span>`, ''],
+    ['可用资金', s.available!=null?fmt$(s.available):'—', ''],
+    ['最近闸门', r.date?(r.gate_pass?'放行':'拦截'):'—', r.date||''],
+    ['闸门规则', 'VIX≥'+o.gate_cfg.vix_min+' 或 SPY≤'+o.gate_cfg.spy_max_pct+'%', ''],
+  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
+  table($('#ov-lots'), qt.quotes, [['symbol','代码'],['qty','数量'],['entry_price','成本'],
+    ['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]);
   $('#ov-day').textContent = '('+o.target_day+')';
-  table($('#ov-sched'), o.schedule, [['ts','时间'],['name','动作']]);
+  table($('#ov-sched'), o.schedule, [['ts','时间 (ET)'],['name','动作']]);
+  if (o.schedule.length){
+    const now = new Date(o.now_et.replace(' ET','').replace(' ','T'));
+    for (const ev of o.schedule){
+      const [md, hm] = ev.ts.replace(' ET','').split(' ');
+      const when = new Date(now.getFullYear()+'-'+md.replace('-','-')+'T'+hm+':00');
+      if (when > now){ nextEvent = {name:ev.name, when}; break; }
+    }
+  }
+  if (snaps.length){
+    chart('eq-chart', {type:'line', data:{labels:snaps.map(x=>x.date),
+      datasets:[{label:'NetLiq', data:snaps.map(x=>x.netliq), borderColor:'#4a90d9', borderWidth:2, pointRadius:2, tension:.2}]},
+      options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+        scales:{x:{ticks:{color:'#8b95a3'}, grid:{display:false}},
+                y:{ticks:{color:'#8b95a3', callback:v=>'$'+(v/1000)+'k'}, grid:{color:'#2a323d'}}}}});
+  }
 }
-async function loadLots(){ table($('#t-lots'), await j('/api/lots'), [['lot_id','ID'],['symbol','代码'],
-  ['entry_date','入场'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态'],
-  ['exit_date','出场日'],['exit_price','出场价'],['exit_how','方式'],['pnl','盈亏','$']]); }
+let lotFilter = '全部';
+async function loadLots(){
+  const [rows, sum] = await Promise.all([j('/api/lots'), j('/api/lots/summary')]);
+  $('#l-cards').innerHTML = [
+    ['已平仓笔数', sum.n||0], ['累计已实现', fmt$(sum.pnl)],
+    ['胜率', sum.n?Math.round(100*sum.wins/sum.n)+'%':'—'],
+  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
+  const states = ['全部', ...new Set(rows.map(r=>r.state))];
+  $('#l-filters').innerHTML = states.map(s=>`<button class="btn ${s===lotFilter?'on':''}" data-f="${s}">${s}</button>`).join('');
+  document.querySelectorAll('#l-filters .btn').forEach(b=>b.onclick=()=>{ lotFilter=b.dataset.f; loadLots(); });
+  const view = lotFilter==='全部'?rows:rows.filter(r=>r.state===lotFilter);
+  table($('#t-lots'), view, [['lot_id','ID'],['symbol','代码'],['entry_date','入场'],['qty','数量'],
+    ['entry_price','成本'],['target_price','目标'],['state','状态'],
+    ['exit_date','出场日'],['exit_price','出场价'],['exit_how','方式'],['pnl','盈亏','$']]);
+}
 async function loadHistory(){
   const sum = await j('/api/history/summary');
   $('#h-cards').innerHTML = sum.by_bucket.map(b=>
     `<div class="card"><div class="k">${b.bucket}（${b.n} 笔，胜率 ${b.win_rate}%）</div>
      <div class="v ${cls(b.pnl)}">${fmt$(b.pnl)}</div></div>`).join('')||'<div class="card">尚未导入历史</div>';
-  if (sum.by_month.length && !window._hc) {
-    let cum=0; const data = sum.by_month.map(m=>({x:m.ym, y:(cum+=m.pnl)}));
-    window._hc = new Chart($('#h-chart'), {type:'line', data:{datasets:[{label:'累计已实现',
-      data, borderColor:'#4a90d9', borderWidth:2, pointRadius:2, tension:.2}]},
+  if (sum.by_month.length){
+    let cum=0; const cumd = sum.by_month.map(m=>({x:m.ym, y:(cum+=m.pnl)}));
+    chart('h-chart', {type:'line', data:{datasets:[{label:'累计已实现', data:cumd, borderColor:'#4a90d9',
+      borderWidth:2, pointRadius:2, tension:.2}]},
       options:{responsive:true, maintainAspectRatio:false, parsing:{xAxisKey:'x', yAxisKey:'y'},
       plugins:{legend:{labels:{color:'#8b95a3'}}},
       scales:{x:{type:'category', ticks:{color:'#8b95a3'}, grid:{color:'#2a323d'}},
+              y:{ticks:{color:'#8b95a3', callback:v=>'$'+v}, grid:{color:'#2a323d'}}}}});
+    chart('h-month', {type:'bar', data:{labels:sum.by_month.map(m=>m.ym),
+      datasets:[{label:'月度盈亏', data:sum.by_month.map(m=>m.pnl),
+        backgroundColor:sum.by_month.map(m=>m.pnl>=0?'#2fbf71':'#e05252'), borderRadius:3}]},
+      options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{labels:{color:'#8b95a3'}}},
+      scales:{x:{ticks:{color:'#8b95a3'}, grid:{display:false}},
               y:{ticks:{color:'#8b95a3', callback:v=>'$'+v}, grid:{color:'#2a323d'}}}}});
   }
   table($('#t-history'), await j('/api/history'), [['symbol','代码'],['entry_date','入场'],['last_date','出场'],
     ['hold_td','持有日'],['bucket','类别'],['pnl','盈亏','$']]);
 }
-async function loadRuns(){ table($('#t-runs'), await j('/api/runs'), [['date','日期'],
-  ['gate_pass','放行'],['vix','VIX'],['spy_pct','SPY%'],['n_planned','计划数'],['budget','预算'],['note','备注']]); }
+async function loadRuns(){
+  const rows = await j('/api/runs');
+  rows.forEach(r=>r.gate_pass = r.gate_pass? '✅ 放行':'⛔ 拦截');
+  table($('#t-runs'), rows, [['date','日期'],['gate_pass','闸门'],['vix','VIX'],['spy_pct','SPY%'],
+    ['n_planned','计划数'],['budget','预算'],['note','备注']]);
+}
 async function loadEvents(){ table($('#t-events'), await j('/api/events'), [['ts','时间'],['kind','类型'],['detail','详情']]); }
 
 const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns, events:loadEvents};

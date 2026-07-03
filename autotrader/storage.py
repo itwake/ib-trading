@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS nightly_runs (
 CREATE TABLE IF NOT EXISTS processed_execs (
   exec_id TEXT PRIMARY KEY, ts TEXT
 );
+CREATE TABLE IF NOT EXISTS control (
+  key TEXT PRIMARY KEY, value TEXT, updated_at TEXT
+);
 """
 
 
@@ -81,6 +84,16 @@ class DB:
             "INSERT OR REPLACE INTO nightly_runs VALUES (?,?,?,?,?,?,?)",
             (date, int(gate_pass), vix, spy_pct, n_planned, budget, note),
         )
+        self.conn.commit()
+
+    def get_control(self, key, default=""):
+        cur = self.conn.execute("SELECT value FROM control WHERE key=?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+
+    def set_control(self, key, value):
+        self.conn.execute("INSERT OR REPLACE INTO control VALUES (?,?,?)",
+                          (key, str(value), datetime.now().isoformat()))
         self.conn.commit()
 
     def exec_seen(self, exec_id) -> bool:
