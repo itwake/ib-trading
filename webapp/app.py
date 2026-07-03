@@ -166,6 +166,119 @@ def set_pause(value: int):
     return {"pause_buys": value}
 
 
+# ================= 手动操作 (独立于守护进程, clientId+2 直连 IB) =================
+import asyncio  # noqa: E402
+
+_action_lock = asyncio.Lock()
+
+
+def _manual_engine():
+    from engine import Engine
+    cfg2 = {**cfg, "ib": {**cfg["ib"], "client_id": cfg["ib"]["client_id"] + 2}}
+    return Engine(cfg2)
+
+
+async def _run_manual(name, coro_factory):
+    async with _action_lock:
+        eng = _manual_engine()
+        eng.db.event("manual", name)
+        try:
+            await eng.broker.connect(retries=1)
+            result = await coro_factory(eng)
+            eng.notify.send(f"[手动] {name} 已执行 (mode={cfg['mode']})")
+            return {"ok": True, "result": str(result) if result is not None else "done"}
+        except Exception as e:
+            eng.notify.send(f"[手动] {name} 失败: {e}", "warn")
+            return {"ok": False, "error": str(e)}
+        finally:
+            eng.broker.disconnect()
+
+
+STEPS = {
+    "overnight_sells": "挂隔夜限价卖单",
+    "premarket_sells": "挂盘前限价卖单",
+    "open_trail": "改挂追踪卖单",
+    "confirm_fills": "成交确认入账",
+    "daily_report": "对账+日报",
+    "buy_flow": "闸门+选股+MOC买入",
+}
+
+
+@app.post("/api/action/step/{step}")
+async def action_step(step: str):
+    if step not in STEPS:
+        return {"ok": False, "error": "未知步骤"}
+    d = now_et().date()
+
+    async def run(eng):
+        if step == "buy_flow":
+            passed = await eng.do_gate_check(d)
+            if not passed:
+                return "闸门拦截, 未买入"
+            ok = await eng.do_build_plan(d)
+            if not ok:
+                return "无可买标的/预算不足"
+            await eng.do_submit_moc(d)
+            return "MOC 已提交"
+        return await getattr(eng, "do_" + step)(d)
+
+    return await _run_manual(STEPS[step], run)
+
+
+@app.post("/api/action/sell_lot/{lot_id}/{how}")
+async def action_sell_lot(lot_id: int, how: str):
+    lots = q("SELECT * FROM lots WHERE lot_id=?", (lot_id,))
+    if not lots:
+        return {"ok": False, "error": "lot 不存在"}
+    lot = lots[0]
+
+    async def run(eng):
+        await eng.broker.cancel_open_sells(lot["symbol"])
+        await asyncio.sleep(0.5)
+        if how == "market":
+            return await eng.broker.sell_market(lot["symbol"], lot["qty"])
+        if how == "trail":
+            return await eng.broker.sell_trail(lot["symbol"], lot["qty"], cfg["exits"]["trail_pct"])
+        return await eng.broker.sell_premarket(lot["symbol"], lot["qty"], lot["target_price"])
+
+    label = {"market": "市价卖出", "trail": "追踪卖出", "limit": "目标价限价卖出"}.get(how, how)
+    return await _run_manual(f"{label} {lot['symbol']} x{lot['qty']} (lot {lot_id})", run)
+
+
+@app.post("/api/action/set_target/{lot_id}/{price}")
+async def action_set_target(lot_id: int, price: float):
+    conn = sqlite3.connect(cfg["db_path"])
+    conn.execute("UPDATE lots SET target_price=? WHERE lot_id=?", (price, lot_id))
+    conn.execute("INSERT INTO events VALUES (?,?,?)",
+                 (datetime.now().isoformat(), "manual", f"改目标价 lot {lot_id} -> {price}"))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "result": f"lot {lot_id} 目标价已改为 {price} (下次挂单生效)"}
+
+
+@app.post("/api/action/cancel_all_sells")
+async def action_cancel_all():
+    async def run(eng):
+        await eng.broker.cancel_open_sells(None)
+        return "已请求撤销全部在途卖单"
+    return await _run_manual("撤销全部卖单", run)
+
+
+@app.post("/api/action/flatten_all")
+async def action_flatten():
+    async def run(eng):
+        pos = await eng.broker.positions()
+        n = 0
+        for p in pos:
+            await eng.broker.cancel_open_sells(p.contract.symbol)
+        await asyncio.sleep(0.5)
+        for p in pos:
+            await eng.broker.sell_market(p.contract.symbol, int(p.position))
+            n += 1
+        return f"已对 {n} 只持仓提交市价清仓单"
+    return await _run_manual("一键清仓 (全部市价卖出)", run)
+
+
 @app.get("/api/shadow/summary")
 def shadow_summary():
     """实盘出场 vs 影子 T+1/T+2 收盘的同批对比。"""

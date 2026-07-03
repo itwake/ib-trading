@@ -60,6 +60,7 @@
   <button data-s="history">全年历史</button>
   <button data-s="runs">每晚决策</button>
   <button data-s="events">事件日志</button>
+  <button data-s="manual" style="color:var(--amber)">手动操作</button>
 </nav>
 <main>
   <section id="overview" class="section active">
@@ -95,6 +96,26 @@
   </section>
   <section id="events" class="section">
     <div class="scroll"><table id="t-events"></table></div>
+  </section>
+  <section id="manual" class="section">
+    <div class="card" style="margin-bottom:14px;">
+      <div class="k">说明</div>
+      <div style="font-size:13px; color:var(--muted); line-height:1.7;">
+        以下操作<b style="color:var(--text)">不依赖守护进程</b>（面板独立连接 IB），自动流程出问题时可手动兜底。
+        当前 <span id="m-mode" class="pill">…</span>，dry 模式下所有订单只记日志不真实发送。每次操作都会写事件日志并推送 Discord。
+      </div>
+    </div>
+    <h3>流程步骤（哪步没跑就点哪步）</h3>
+    <div class="filters" id="m-steps"></div>
+    <h3>单仓位操作</h3>
+    <div class="scroll"><table id="m-lots"></table></div>
+    <h3 style="color:var(--red)">危险区</h3>
+    <div class="filters">
+      <button class="btn danger" id="m-cancel">撤销全部在途卖单</button>
+      <button class="btn danger" id="m-flatten">一键清仓（全部市价卖出）</button>
+    </div>
+    <h3>操作结果</h3>
+    <div class="card"><pre id="m-log" style="margin:0; font-size:12px; white-space:pre-wrap; max-height:200px; overflow:auto;">—</pre></div>
   </section>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -225,7 +246,50 @@ async function loadRuns(){
 }
 async function loadEvents(){ table($('#t-events'), await j('/api/events'), [['ts','时间'],['kind','类型'],['detail','详情']]); }
 
-const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns, events:loadEvents};
+const STEPS = {overnight_sells:'挂隔夜卖单', premarket_sells:'挂盘前卖单', open_trail:'改挂追踪单',
+  confirm_fills:'成交确认', daily_report:'对账+日报', buy_flow:'闸门+买入流程'};
+function mlog(s){ const el=$('#m-log'); el.textContent = new Date().toLocaleTimeString()+'  '+s+'\n'+el.textContent; }
+async function act(url, name){
+  mlog(name+' 执行中…');
+  try { const r = await j(url, {method:'POST'});
+    mlog(name+': '+(r.ok?('✅ '+r.result):('❌ '+r.error)));
+  } catch(e){ mlog(name+': ❌ '+e); }
+}
+async function loadManual(){
+  const o = await j('/api/overview');
+  $('#m-mode').textContent = 'mode: '+o.mode;
+  $('#m-mode').className = 'pill '+(o.mode==='live'?'ok':'warn');
+  $('#m-steps').innerHTML = Object.entries(STEPS).map(([k,v])=>
+    `<button class="btn" data-step="${k}">${v}</button>`).join('');
+  document.querySelectorAll('#m-steps .btn').forEach(b=>b.onclick=()=>{
+    if (confirm('手动执行「'+STEPS[b.dataset.step]+'」？')) act('/api/action/step/'+b.dataset.step, STEPS[b.dataset.step]);
+  });
+  const rows = o.open_lots;
+  if (!rows.length){ $('#m-lots').innerHTML='<tr><td style="color:var(--muted)">无未平仓位</td></tr>'; }
+  else {
+    $('#m-lots').innerHTML = '<tr><th>lot</th><th>代码</th><th>数量</th><th>成本</th><th>目标</th><th>状态</th><th>操作</th></tr>'+
+      rows.map(r=>`<tr><td>${r.lot_id}</td><td>${r.symbol}</td><td>${r.qty}</td><td>${r.entry_price}</td>
+        <td>${r.target_price}</td><td>${r.state}</td><td style="display:flex;gap:4px;">
+        <button class="btn" onclick="sellLot(${r.lot_id},'limit','${r.symbol}')">限价卖</button>
+        <button class="btn" onclick="sellLot(${r.lot_id},'trail','${r.symbol}')">追踪卖</button>
+        <button class="btn danger" onclick="sellLot(${r.lot_id},'market','${r.symbol}')">市价卖</button>
+        <button class="btn" onclick="setTarget(${r.lot_id},${r.target_price})">改目标</button></td></tr>`).join('');
+  }
+  $('#m-cancel').onclick = ()=>{ if (confirm('撤销全部在途卖单？')) act('/api/action/cancel_all_sells','撤销全部卖单'); };
+  $('#m-flatten').onclick = ()=>{
+    const t = prompt('⚠️ 将对所有持仓提交市价卖出！输入 FLATTEN 确认:');
+    if (t==='FLATTEN') act('/api/action/flatten_all','一键清仓');
+  };
+}
+function sellLot(id, how, sym){
+  const name = {limit:'限价卖',trail:'追踪卖',market:'市价卖'}[how]+' '+sym;
+  if (confirm(name+'（lot '+id+'）？会先撤该票在途卖单')) act('/api/action/sell_lot/'+id+'/'+how, name);
+}
+function setTarget(id, cur){
+  const p = prompt('新目标价 (当前 '+cur+'):');
+  if (p && !isNaN(parseFloat(p))) act('/api/action/set_target/'+id+'/'+parseFloat(p), '改目标价 lot '+id);
+}
+const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns, events:loadEvents, manual:loadManual};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));

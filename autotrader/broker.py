@@ -118,6 +118,14 @@ class Broker:
         o.outsideRth = True
         return self._send(c, o, "盘前限价卖")
 
+    async def sell_market(self, symbol, qty):
+        """应急市价卖出 (仅 RTH 保证成交; 盘外用限价)。"""
+        c = await self.qualify(symbol)
+        if not c:
+            return None
+        o = Order(action="SELL", totalQuantity=qty, orderType="MKT", tif="DAY")
+        return self._send(c, o, "市价卖出")
+
     async def sell_trail(self, symbol, qty, trail_pct):
         """开盘后 0.3% 追踪卖出。"""
         c = await self.qualify(symbol)
