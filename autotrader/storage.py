@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS nightly_runs (
   date TEXT PRIMARY KEY, gate_pass INTEGER, vix REAL, spy_pct REAL,
   n_planned INTEGER, budget REAL, note TEXT
 );
+CREATE TABLE IF NOT EXISTS processed_execs (
+  exec_id TEXT PRIMARY KEY, ts TEXT
+);
 """
 
 
@@ -79,6 +82,19 @@ class DB:
             (date, int(gate_pass), vix, spy_pct, n_planned, budget, note),
         )
         self.conn.commit()
+
+    def exec_seen(self, exec_id) -> bool:
+        cur = self.conn.execute("SELECT 1 FROM processed_execs WHERE exec_id=?", (exec_id,))
+        return cur.fetchone() is not None
+
+    def mark_exec(self, exec_id):
+        self.conn.execute("INSERT OR IGNORE INTO processed_execs VALUES (?,?)",
+                          (exec_id, datetime.now().isoformat()))
+        self.conn.commit()
+
+    def realized_on(self, date) -> float:
+        cur = self.conn.execute("SELECT COALESCE(SUM(pnl),0) FROM lots WHERE exit_date=?", (date,))
+        return cur.fetchone()[0]
 
     def snapshot(self, date, netliq, cash, gross, available, n_pos, realized_today):
         self.conn.execute(

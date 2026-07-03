@@ -68,12 +68,13 @@ class Engine:
         n = 0
         for f in fills:
             e, c = f.execution, f.contract
-            if e.side != "BOT":
+            if e.side != "BOT" or self.db.exec_seen(e.execId):
                 continue
-            lot_id = self.db.add_lot(c.symbol, str(d), int(e.shares), float(e.avgPrice),
-                                     round_tick(float(e.avgPrice) * target_mult))
+            self.db.add_lot(c.symbol, str(d), int(e.shares), float(e.avgPrice),
+                            round_tick(float(e.avgPrice) * target_mult))
+            self.db.mark_exec(e.execId)
             n += 1
-        self.notify.send(f"[{d}] 成交确认: {n} 笔买入已入台账")
+        self.notify.send(f"[{d}] 成交确认: {n} 笔新买入已入台账")
 
     async def do_overnight_sells(self, d):
         lots = self.db.open_lots()
@@ -115,24 +116,44 @@ class Engine:
         acct = await self.broker.account()
         pos = await self.broker.positions()
         left = self.db.open_lots()
-        msg = (f"[{d}] 日报: NetLiq ${acct['NetLiquidation']:,.0f} | 现金 ${acct['TotalCashValue']:,.0f} | "
-               f"持仓 ${acct['GrossPositionValue']:,.0f} ({len(pos)} 只) | 台账未平 lot {len(left)}")
+        realized = self.db.realized_on(str(d))
+        msg = (f"[{d}] 日报: 当日已实现 ${realized:+,.0f} | NetLiq ${acct['NetLiquidation']:,.0f} | "
+               f"现金 ${acct['TotalCashValue']:,.0f} | 持仓 ${acct['GrossPositionValue']:,.0f} ({len(pos)} 只) | "
+               f"台账未平 lot {len(left)}")
         if left and any(l["state"] == "TRAILING" for l in left):
             msg += "\n⚠️ 有 TRAILING 状态 lot 未平 — 检查是否停牌/未成交"
         self.notify.send(msg)
         self.db.snapshot(str(d), acct["NetLiquidation"], acct["TotalCashValue"],
-                         acct["GrossPositionValue"], acct["AvailableFunds"], len(pos), 0)
+                         acct["GrossPositionValue"], acct["AvailableFunds"], len(pos), realized)
 
     async def _resync_lots_with_positions(self, tag):
-        """以 IB 实际持仓为准核对台账: 已经没有持仓的 lot 标记 CLOSED。"""
+        """以 IB 实际持仓为准核对台账: 已清仓的 lot 用当日卖出成交回填真实出场价与盈亏。"""
         try:
             pos = {p.contract.symbol: p.position for p in await self.broker.positions()}
+            fills = await self.broker.todays_fills()
         except Exception as e:
             log.warning("对账失败(%s): %s", tag, e)
             return
+        sells = {}
+        for f in fills:
+            e, c = f.execution, f.contract
+            if e.side == "SLD":
+                q0, cash0 = sells.get(c.symbol, (0.0, 0.0))
+                sells[c.symbol] = (q0 + e.shares, cash0 + e.shares * e.price)
+        closed_msgs = []
         for lot in self.db.open_lots():
-            if pos.get(lot["symbol"], 0) <= 0:
-                self.db.close_lot(lot["lot_id"], str(now_et().date()), 0, f"resync@{tag}", 0)
+            if pos.get(lot["symbol"], 0) > 0:
+                continue
+            q, cash = sells.get(lot["symbol"], (0.0, 0.0))
+            exit_px = cash / q if q else 0.0
+            pnl = (exit_px - lot["entry_price"]) * lot["qty"] - 2.0 if exit_px else 0.0
+            self.db.close_lot(lot["lot_id"], str(now_et().date()), round(exit_px, 4),
+                              f"fill@{tag}" if exit_px else f"resync@{tag}", round(pnl, 2))
+            if exit_px:
+                pct = (exit_px / lot["entry_price"] - 1) * 100
+                closed_msgs.append(f"{lot['symbol']} x{lot['qty']} @{exit_px:.2f} ({pct:+.2f}%, ${pnl:+,.0f})")
+        if closed_msgs:
+            self.notify.send("已平仓:\n" + "\n".join(closed_msgs))
 
     # ---------- 主循环 ----------
     ACTIONS = {
@@ -176,8 +197,31 @@ class Engine:
             finally:
                 self.broker.disconnect()
 
+    async def heartbeat_loop(self):
+        """每 10 分钟探测网关/隧道; 状态变化即告警; 交易时段整点报平安。"""
+        from broker import probe_handshake
+        c = self.cfg["ib"]
+        last_ok, last_beat = None, None
+        while True:
+            ok = probe_handshake(c["host"], c["port"], timeout=10)
+            if last_ok is not None and ok != last_ok:
+                if ok:
+                    self.notify.send("网关/隧道恢复正常 ✅")
+                else:
+                    self.notify.send("网关/隧道无响应！检查 Windows 隧道任务与 Gateway", "critical")
+            last_ok = ok
+            t = now_et()
+            hb_min = self.cfg["notify"].get("heartbeat_minutes", 60)
+            in_session = cal.is_trading_day(t.date()) and 4 <= t.hour < 20
+            if in_session and hb_min and (last_beat is None or (t - last_beat).total_seconds() >= hb_min * 60):
+                open_n = len(self.db.open_lots())
+                self.notify.send(f"心跳: 网关{'正常' if ok else '异常'} | 未平 lot {open_n} | {t:%H:%M ET}")
+                last_beat = t
+            await asyncio.sleep(600)
+
     async def run_forever(self):
         self.notify.send(f"autotrader 启动 (mode={self.cfg['mode']})")
+        asyncio.create_task(self.heartbeat_loop())
         while True:
             today = now_et().date()
             if cal.is_trading_day(today) and now_et() < cal.market_close_et(today) + timedelta(minutes=30):
