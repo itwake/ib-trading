@@ -31,6 +31,7 @@
     "open_trail": "09:31",
     "daily_report": "16:20"
   },
+  "risk": { "cushion_alert_pct": 12 },
   "notify": { "discord_webhook": "", "heartbeat_minutes": 60 },
   "db_path": "journal.db"
 }

@@ -1,0 +1,6 @@
+[Unit]
+Description=ib-trading journal backup
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ib-trading/.venv/bin/python /opt/ib-trading/deploy/backup.py

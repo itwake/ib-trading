@@ -52,9 +52,16 @@ cd C:\CCWork\ib-trading\autotrader
 4. 纸账户（Gateway 登纸账户或第二实例，port 4002）跑 ≥1 周
 5. `mode` 改 `live`，首周 `nightly_max_usd` 降到 5000
 
+## 2026-07-04 增量（部署于 192.168.8.237, http://192.168.8.237）
+
+- 台账真实化：平仓回填真实成交价/盈亏并播报；成交确认按 execId 幂等
+- 心跳：10 分钟网关/隧道探测（状态变化告警）+ 交易时段整点心跳 + RTH 每 30 分钟保证金缓冲检查（<12% critical）
+- 面板 v2：实时闸门、延迟报价与浮盈、净值曲线、下一动作倒计时、lot 筛选、月度盈亏图、**暂停开仓开关**（只停买入链）
+- 影子出场实验：每笔平仓自动回填 T+1/T+2 收盘假想盈亏，面板对比三种出场规则的同批实盘结果
+- 运维：deploy/update.sh 一键更新；每日 journal.db 备份（systemd timer，保留 30 份）+ 日志清理
+
 ## 已知限制 / 待办
 
-- 佣金/滑点观测：daily_report 后续加当日已实现盈亏（从 fills 累计）
-- 观测面板：SQLite 已有全部数据，后续加静态 HTML 报表生成
-- 网关生命周期：接 IBC 实现周级免 2FA 自动重启（现在依赖 Gateway 自带 AutoRestart）
+- 网关生命周期：接 IBC 实现周级免 2FA 自动重启（现在依赖 Gateway 自带 AutoRestart + Windows 隧道）
 - Finviz 页面结构变化会抛异常 → 已有告警，备选方案是 IB Scanner API
+- 面板无鉴权，仅限内网使用；如需公网访问先加反代 + Basic Auth

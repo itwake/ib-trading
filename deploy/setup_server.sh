@@ -10,8 +10,10 @@ python3 -m venv .venv
 
 cp deploy/autotrader.service /etc/systemd/system/
 cp deploy/ibtrading-web.service /etc/systemd/system/
+cp deploy/ibtrading-backup.service /etc/systemd/system/
+cp deploy/ibtrading-backup.timer /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable autotrader ibtrading-web
+systemctl enable autotrader ibtrading-web ibtrading-backup.timer
 
 echo "完成。下一步:"
 echo "  1) cp autotrader/config.example.json autotrader/config.json 并填写 webhook"

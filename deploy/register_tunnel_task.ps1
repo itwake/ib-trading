@@ -1,4 +1,4 @@
-# 注册开机自启的隧道计划任务 (以当前用户运行, 需 ssh 密钥免密登录服务器)
+# Register auto-start tunnel task (runs as current user, needs key-based ssh to server)
 $script = Join-Path $PSScriptRoot "windows_tunnel.ps1"
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`""
@@ -8,4 +8,4 @@ $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New
 Register-ScheduledTask -TaskName "ib-trading-tunnel" -Action $action -Trigger $trigger `
     -Settings $settings -Force
 Start-ScheduledTask -TaskName "ib-trading-tunnel"
-Write-Host "隧道任务已注册并启动: ib-trading-tunnel"
+Write-Host "Tunnel task registered and started: ib-trading-tunnel"
