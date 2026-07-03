@@ -129,6 +129,11 @@ class Engine:
         self.notify.send(msg)
         self.db.snapshot(str(d), acct["NetLiquidation"], acct["TotalCashValue"],
                          acct["GrossPositionValue"], acct["AvailableFunds"], len(pos), realized)
+        try:
+            from shadow import evaluate_shadows
+            evaluate_shadows(self.db, self.notify)
+        except Exception as e:
+            log.warning("影子实验失败: %s", e)
 
     async def _resync_lots_with_positions(self, tag):
         """以 IB 实际持仓为准核对台账: 已清仓的 lot 用当日卖出成交回填真实出场价与盈亏。"""
@@ -202,10 +207,11 @@ class Engine:
                 self.broker.disconnect()
 
     async def heartbeat_loop(self):
-        """每 10 分钟探测网关/隧道; 状态变化即告警; 交易时段整点报平安。"""
-        from broker import probe_handshake
+        """每 10 分钟探测网关/隧道; 状态变化即告警; 交易时段整点报平安 + 保证金缓冲监控。"""
+        from broker import Broker, probe_handshake
         c = self.cfg["ib"]
-        last_ok, last_beat = None, None
+        last_ok, last_beat, last_margin_alert = None, None, None
+        n = 0
         while True:
             ok = probe_handshake(c["host"], c["port"], timeout=10)
             if last_ok is not None and ok != last_ok:
@@ -221,6 +227,26 @@ class Engine:
                 open_n = len(self.db.open_lots())
                 self.notify.send(f"心跳: 网关{'正常' if ok else '异常'} | 未平 lot {open_n} | {t:%H:%M ET}")
                 last_beat = t
+            # 保证金缓冲: RTH 内每 30 分钟查一次
+            n += 1
+            rth = cal.is_trading_day(t.date()) and (9, 30) <= (t.hour, t.minute) < (16, 0)
+            if ok and rth and n % 3 == 0:
+                try:
+                    rb = Broker({**self.cfg, "ib": {**c, "client_id": c["client_id"] + 1}})
+                    await rb.connect(retries=1)
+                    acct = await rb.account()
+                    rb.disconnect()
+                    netliq = acct["NetLiquidation"]
+                    cushion = acct["AvailableFunds"] / netliq * 100 if netliq else 0
+                    limit = self.cfg.get("risk", {}).get("cushion_alert_pct", 12)
+                    if cushion < limit and (last_margin_alert is None or
+                                            (t - last_margin_alert).total_seconds() > 7200):
+                        self.notify.send(
+                            f"保证金缓冲仅 {cushion:.1f}% (可用 ${acct['AvailableFunds']:,.0f} / "
+                            f"净值 ${netliq:,.0f})，接近强平风险，考虑减仓", "critical")
+                        last_margin_alert = t
+                except Exception as e:
+                    log.warning("保证金检查失败: %s", e)
             await asyncio.sleep(600)
 
     async def run_forever(self):

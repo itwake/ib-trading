@@ -166,6 +166,16 @@ def set_pause(value: int):
     return {"pause_buys": value}
 
 
+@app.get("/api/shadow/summary")
+def shadow_summary():
+    """实盘出场 vs 影子 T+1/T+2 收盘的同批对比。"""
+    rows = q("SELECT COUNT(*) n, ROUND(SUM(pnl),0) actual, ROUND(SUM(shadow_t1),0) t1,"
+             " ROUND(SUM(shadow_t2),0) t2 FROM lots WHERE shadow_t1 IS NOT NULL")
+    detail = q("SELECT lot_id, symbol, entry_date, pnl, shadow_t1, shadow_t2 FROM lots"
+               " WHERE shadow_t1 IS NOT NULL ORDER BY lot_id DESC LIMIT 100")
+    return {"summary": rows[0] if rows else {}, "detail": detail}
+
+
 @app.get("/api/history/summary")
 def history_summary():
     try:

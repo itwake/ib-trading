@@ -39,6 +39,22 @@ class DB:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.executescript(SCHEMA)
+        for col in ("shadow_t1", "shadow_t2"):
+            try:
+                self.conn.execute(f"ALTER TABLE lots ADD COLUMN {col} REAL")
+            except sqlite3.OperationalError:
+                pass
+        self.conn.commit()
+
+    def lots_needing_shadow(self):
+        cur = self.conn.execute(
+            "SELECT lot_id, symbol, entry_date, qty, entry_price, target_price FROM lots"
+            " WHERE state='CLOSED' AND shadow_t1 IS NULL AND exit_price > 0")
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def set_shadow(self, lot_id, t1, t2):
+        self.conn.execute("UPDATE lots SET shadow_t1=?, shadow_t2=? WHERE lot_id=?", (t1, t2, lot_id))
         self.conn.commit()
 
     def event(self, kind, detail):

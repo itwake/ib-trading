@@ -177,11 +177,15 @@ async function loadOverview(){
 }
 let lotFilter = '全部';
 async function loadLots(){
-  const [rows, sum] = await Promise.all([j('/api/lots'), j('/api/lots/summary')]);
+  const [rows, sum, sh] = await Promise.all([j('/api/lots'), j('/api/lots/summary'), j('/api/shadow/summary')]);
+  const s = sh.summary||{};
   $('#l-cards').innerHTML = [
-    ['已平仓笔数', sum.n||0], ['累计已实现', fmt$(sum.pnl)],
-    ['胜率', sum.n?Math.round(100*sum.wins/sum.n)+'%':'—'],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
+    ['已平仓笔数', sum.n||0, ''], ['累计已实现', fmt$(sum.pnl), ''],
+    ['胜率', sum.n?Math.round(100*sum.wins/sum.n)+'%':'—', ''],
+    ['出场实验: 实际', s.n?fmt$(s.actual):'—', s.n?('同批 '+s.n+' 笔'):'积累数据中'],
+    ['影子 T+1 收盘', s.n?fmt$(s.t1):'—', ''],
+    ['影子 T+2 收盘', s.n?fmt$(s.t2):'—', ''],
+  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
   const states = ['全部', ...new Set(rows.map(r=>r.state))];
   $('#l-filters').innerHTML = states.map(s=>`<button class="btn ${s===lotFilter?'on':''}" data-f="${s}">${s}</button>`).join('');
   document.querySelectorAll('#l-filters .btn').forEach(b=>b.onclick=()=>{ lotFilter=b.dataset.f; loadLots(); });
