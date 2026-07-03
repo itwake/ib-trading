@@ -1,0 +1,15 @@
+[Unit]
+Description=ib-trading autotrader daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ib-trading/autotrader
+ExecStart=/opt/ib-trading/.venv/bin/python main.py run
+Restart=always
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=ib-trading web dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ib-trading/webapp
+ExecStart=/opt/ib-trading/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 80
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
