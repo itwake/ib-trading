@@ -1,0 +1,88 @@
+# -*- coding: utf-8 -*-
+"""SQLite 台账: lots 生命周期 / 订单 / 事件 / 每日快照。"""
+import sqlite3
+from datetime import datetime
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS lots (
+  lot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT, entry_date TEXT, qty INTEGER, entry_price REAL,
+  target_price REAL, state TEXT,           -- PLANNED/FILLED/OVERNIGHT/PREMARKET/TRAILING/CLOSED/ERROR
+  exit_date TEXT, exit_price REAL, exit_how TEXT, pnl REAL,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS orders (
+  order_id INTEGER, lot_id INTEGER, kind TEXT, symbol TEXT, qty INTEGER,
+  limit_price REAL, status TEXT, placed_at TEXT, note TEXT
+);
+CREATE TABLE IF NOT EXISTS events (
+  ts TEXT, kind TEXT, detail TEXT
+);
+CREATE TABLE IF NOT EXISTS snapshots (
+  date TEXT PRIMARY KEY, netliq REAL, cash REAL, gross REAL,
+  available REAL, n_pos INTEGER, realized_today REAL
+);
+CREATE TABLE IF NOT EXISTS nightly_runs (
+  date TEXT PRIMARY KEY, gate_pass INTEGER, vix REAL, spy_pct REAL,
+  n_planned INTEGER, budget REAL, note TEXT
+);
+"""
+
+
+class DB:
+    def __init__(self, path):
+        self.conn = sqlite3.connect(path)
+        self.conn.executescript(SCHEMA)
+        self.conn.commit()
+
+    def event(self, kind, detail):
+        self.conn.execute("INSERT INTO events VALUES (?,?,?)", (datetime.now().isoformat(), kind, str(detail)))
+        self.conn.commit()
+
+    def add_lot(self, symbol, entry_date, qty, entry_price, target_price, state="FILLED"):
+        cur = self.conn.execute(
+            "INSERT INTO lots (symbol, entry_date, qty, entry_price, target_price, state, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (symbol, entry_date, qty, entry_price, target_price, state, datetime.now().isoformat()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def open_lots(self):
+        cur = self.conn.execute(
+            "SELECT lot_id, symbol, entry_date, qty, entry_price, target_price, state FROM lots"
+            " WHERE state NOT IN ('CLOSED','ERROR')")
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def set_lot_state(self, lot_id, state):
+        self.conn.execute("UPDATE lots SET state=? WHERE lot_id=?", (state, lot_id))
+        self.conn.commit()
+
+    def close_lot(self, lot_id, exit_date, exit_price, exit_how, pnl):
+        self.conn.execute(
+            "UPDATE lots SET state='CLOSED', exit_date=?, exit_price=?, exit_how=?, pnl=? WHERE lot_id=?",
+            (exit_date, exit_price, exit_how, pnl, lot_id),
+        )
+        self.conn.commit()
+
+    def record_order(self, order_id, lot_id, kind, symbol, qty, limit_price, status, note=""):
+        self.conn.execute(
+            "INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?)",
+            (order_id, lot_id, kind, symbol, qty, limit_price, status, datetime.now().isoformat(), note),
+        )
+        self.conn.commit()
+
+    def record_run(self, date, gate_pass, vix, spy_pct, n_planned, budget, note=""):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO nightly_runs VALUES (?,?,?,?,?,?,?)",
+            (date, int(gate_pass), vix, spy_pct, n_planned, budget, note),
+        )
+        self.conn.commit()
+
+    def snapshot(self, date, netliq, cash, gross, available, n_pos, realized_today):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO snapshots VALUES (?,?,?,?,?,?,?)",
+            (date, netliq, cash, gross, available, n_pos, realized_today),
+        )
+        self.conn.commit()

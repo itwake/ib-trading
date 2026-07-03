@@ -1,0 +1,36 @@
+{
+  "mode": "dry",
+  "ib": { "host": "127.0.0.1", "port": 4003, "client_id": 31, "paper_port": 4002 },
+  "gate": { "enabled": true, "vix_min": 17.0, "spy_max_pct": -0.25 },
+  "screener": {
+    "finviz_url": "https://finviz.com/screener.ashx?v=141&f=cap_midover,sh_avgvol_o1000,sh_price_o15,sh_relvol_o1,ta_perf_ddown&o=change&r={}",
+    "skip_rank": 1,
+    "n_stocks": 10,
+    "lot_size": 2
+  },
+  "budget": {
+    "nightly_max_usd": 20000,
+    "gross_max_x_netliq": 2.0,
+    "min_available_funds_usd": 2000,
+    "per_stock_max_pct": 15,
+    "sector_max_per_night": 0
+  },
+  "exits": {
+    "overnight_target_pct": 1.5,
+    "premarket_limit": true,
+    "trail_pct": 0.3,
+    "leftover_policy": "alert"
+  },
+  "schedule_et": {
+    "gate_check": "15:33",
+    "build_plan": "15:38",
+    "submit_moc": "15:45",
+    "confirm_fills": "16:10",
+    "overnight_sells": "20:05",
+    "premarket_sells": "04:05",
+    "open_trail": "09:31",
+    "daily_report": "16:20"
+  },
+  "notify": { "discord_webhook": "", "heartbeat_minutes": 60 },
+  "db_path": "journal.db"
+}

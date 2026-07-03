@@ -1,0 +1,8 @@
+ib_async>=2.0
+exchange_calendars
+yfinance
+pandas
+requests
+beautifulsoup4
+fastapi
+uvicorn
