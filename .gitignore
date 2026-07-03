@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.db
+data/
+autotrader/logs/
+autotrader/config.json
+webapp/config.json
+.claude/
+*.log
