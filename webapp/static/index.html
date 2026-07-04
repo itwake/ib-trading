@@ -73,7 +73,7 @@
   <span class="pill" id="mode" data-tip="运行模式。dry＝演练：所有订单只记日志和播报，不会真实发送到 IB；live＝实盘：真实下单。在「配置」页切换，切 live 需输入确认词。">…</span>
   <span class="pill" id="gw" data-tip="经 SSH 隧道探测家中 IB Gateway 的 API 端口（每次刷新时实测）。「无响应」通常是：① Windows 上的隧道断了；② Gateway 掉线或 API 挂死。守护进程每 10 分钟也会探测并在状态变化时推送 Discord。">网关…</span>
   <span class="pill" id="gatepill" data-tip="环境闸门的实时判定（15 分钟延迟数据，5 分钟缓存）。规则：VIX ≥ 阈值 或 SPY 当日跌幅 ≤ 阈值，任一满足＝今晚可开仓。依据：全年实盘审计显示放行日单笔收益约为拦截日的 2.6 倍，且最差的隔夜暴雷多发生在拦截日。">闸门…</span>
-  <span class="pill" id="clock" data-tip="服务器时间（美东 ET）。所有自动动作按交易所时间触发，与显示时区无关。">…</span>
+  <span class="pill" id="clock" data-tip="按「配置」页所选时区显示的当前时间（每秒更新）。注意：所有自动动作始终按交易所（美东）时间触发，显示时区只影响界面。">…</span>
   <span class="pill" id="countdown" data-tip="守护进程的下一个自动动作及倒计时。完整时刻表见总览页右下角。">…</span>
   <span style="flex:1"></span>
   <button class="btn" id="pauseBtn" data-tip="紧急开关：暂停后每晚的自动买入停止（闸门直接判拦截），但卖出链（隔夜限价、盘前限价、开盘追踪）继续正常工作，已有持仓不受影响。适合休假、行情异常等场景。">…</button>
@@ -85,6 +85,7 @@
   <button data-s="history" data-tip="上线前一整年的真实成交审计（1298 笔），按策略类型分账，作为策略基准">全年历史</button>
   <button data-s="runs" data-tip="每晚闸门的判定记录：VIX/SPY 数值、放行/拦截、计划买入数与预算">每晚决策</button>
   <button data-s="events" data-tip="系统事件流水：手动操作、配置修改、异常告警，全部留痕">事件日志</button>
+  <button data-s="cal" data-tip="交易日历：休市日、半日市（提前收盘）、每天的闸门判定与已实现盈亏、持仓股财报日">交易日历</button>
   <button data-s="manual" style="color:var(--amber)" data-tip="自动化的手动兜底：单步触发流程、单仓位应急卖出、一键清仓。不依赖守护进程，面板独立连接 IB">手动操作</button>
   <button data-s="config" data-tip="闸门规则、下单规则、风控阈值、通知、dry/live 切换、显示时区">配置</button>
   <button data-s="help" data-tip="系统说明、快速上手、常见问题">帮助</button>
@@ -123,6 +124,19 @@
   </section>
   <section id="events" class="section">
     <div class="scroll"><table id="t-events"></table></div>
+  </section>
+  <section id="cal" class="section">
+    <div class="filters" style="align-items:center;">
+      <button class="btn" id="cal-prev">‹ 上月</button>
+      <span id="cal-title" style="font-size:16px; font-weight:600; padding:0 10px;">…</span>
+      <button class="btn" id="cal-next">下月 ›</button>
+      <span style="flex:1"></span>
+      <span style="font-size:12px; color:var(--muted);">
+        <span style="color:var(--red)">■</span> 休市　<span style="color:var(--amber)">■</span> 半日市
+        ✅/⛔ 闸门　<span class="pos">$</span>/<span class="neg">$</span> 当日已实现　📊 持仓财报
+      </span>
+    </div>
+    <div id="cal-grid" style="display:grid; grid-template-columns:repeat(7,1fr); gap:6px;"></div>
   </section>
   <section id="manual" class="section">
     <div class="card" style="margin-bottom:14px;">
@@ -282,6 +296,12 @@ function fmtTs(iso){
   if (tz !== 'local') opt.timeZone = tz;
   return new Date(iso).toLocaleString('zh-CN', opt) + ' ' + (TZS[tz]||'');
 }
+setInterval(()=>{  /* 活时钟: 按所选时区每秒更新 */
+  const tz = getTz();
+  const opt = {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false};
+  if (tz !== 'local') opt.timeZone = tz;
+  $('#clock').textContent = new Date().toLocaleString('zh-CN', opt).replace(/\//g,'-') + ' ' + (TZS[tz]||'');
+}, 1000);
 let nextEvent = null;
 setInterval(()=>{ if(!nextEvent) return;
   const dt = (nextEvent.when - new Date())/1000;
@@ -298,7 +318,6 @@ async function header_(){
     $('#mode').className = 'pill '+(o.mode==='live'?'ok':'warn');
     $('#gw').textContent = o.gateway_ok?'网关正常':'网关无响应';
     $('#gw').className = 'pill '+(o.gateway_ok?'ok':'bad');
-    $('#clock').textContent = o.now_et;
     const todayEt = o.now_et.split(' ')[0];
     $('#banner').style.display = (o.target_day!==todayEt)?'block':'none';
     $('#banner').textContent = '今日休市 · 下一交易日 '+o.target_day+' · 数据为最后一个交易日的状态';
@@ -429,7 +448,46 @@ async function loadRuns(){
     ['vix','VIX','', '当晚判定时的 VIX 值；≥阈值即放行'],['spy_pct','SPY%','', '当晚判定时 SPY 的当日涨跌；≤阈值即放行'],
     ['n_planned','计划数'],['budget','预算'],['note','备注']]);
 }
-async function loadEvents(){ table($('#t-events'), await j('/api/events'), [['ts','时间'],['kind','类型','', 'manual=手动操作 config=配置修改'],['detail','详情']]); }
+async function loadEvents(){
+  const rows = await j('/api/events');
+  rows.forEach(r=>{ r.显示 = r.iso ? fmtTs(r.iso) : r.ts; });
+  table($('#t-events'), rows, [['显示','时间','', '按所选显示时区换算'],['kind','类型','', 'manual=手动操作 config=配置修改'],['detail','详情']]);
+}
+
+/* ---------- 交易日历 ---------- */
+let calYm = null;
+function ymShift(ym, n){ let [y,m]=ym.split('-').map(Number); m+=n; while(m>12){m-=12;y++;} while(m<1){m+=12;y--;} return `${y}-${String(m).padStart(2,'0')}`; }
+async function loadCal(){
+  const d = await safeJ('/api/calendar'+(calYm?('?ym='+calYm):''));
+  if (!d){ $('#cal-grid').innerHTML = '<div class="card">日历接口不可用</div>'; return; }
+  calYm = d.ym;
+  $('#cal-title').textContent = d.ym;
+  $('#cal-prev').onclick = ()=>{ calYm = ymShift(calYm,-1); loadCal(); };
+  $('#cal-next').onclick = ()=>{ calYm = ymShift(calYm,1); loadCal(); };
+  const dows = ['一','二','三','四','五','六','日'];
+  let html = dows.map(w=>`<div style="text-align:center; color:var(--muted); font-size:12px;">${w}</div>`).join('');
+  html += '<div></div>'.repeat(d.first_dow);
+  for (const day of d.days){
+    const run = d.runs[day.date], pnl = d.realized[day.date], earn = d.earnings[day.date];
+    const isToday = day.date === d.today;
+    let border = day.trading ? 'var(--border)' : 'var(--red)';
+    if (day.early) border = 'var(--amber)';
+    let badges = '';
+    if (day.early) badges += `<div style="font-size:11px;color:var(--amber);">半日市 ${day.close} 收盘</div>`;
+    if (!day.trading && day.dow < 5) badges += `<div style="font-size:11px;color:var(--red);">休市</div>`;
+    if (run) badges += `<div style="font-size:11px;">${run.gate_pass?'✅':'⛔'} VIX ${run.vix?run.vix.toFixed(1):'—'}</div>`;
+    if (pnl != null) badges += `<div class="${cls(pnl)}" style="font-size:12px;font-weight:600;">${fmt$(pnl)}</div>`;
+    if (earn) badges += `<div style="font-size:11px;color:var(--blue);">📊 ${earn.join(',')}</div>`;
+    const tipParts = [];
+    tipParts.push(day.trading ? ('交易日'+(day.early?`（半日市，${day.close} ET 提前收盘，MOC 截止相应提前，系统自动适配）`:`，${day.close||'16:00'} ET 收盘`)) : (day.dow>=5?'周末':'交易所休市'));
+    if (run) tipParts.push(`闸门${run.gate_pass?'放行':'拦截'}：VIX ${run.vix??'—'}，SPY ${run.spy_pct??'—'}%，计划买入 ${run.n_planned} 只`);
+    if (pnl != null) tipParts.push(`当日已实现盈亏 ${fmt$(pnl)}`);
+    if (earn) tipParts.push(`持仓财报日：${earn.join('、')}（财报=隔夜跳空风险，注意当天持仓）`);
+    html += `<div class="card" data-tip="${tipParts.join('；')}" style="padding:8px 10px; min-height:74px; border-color:${border}; ${isToday?'outline:2px solid var(--blue);':''} ${!day.trading?'opacity:.55;':''}">
+      <div style="font-size:13px; font-weight:600;">${parseInt(day.date.slice(8))}</div>${badges}</div>`;
+  }
+  $('#cal-grid').innerHTML = html;
+}
 
 /* ---------- 手动操作 ---------- */
 const STEPS = {overnight_sells:'挂隔夜卖单', premarket_sells:'挂盘前卖单', open_trail:'改挂追踪单',
@@ -590,7 +648,7 @@ $('#tour-btn').onclick = async ()=>{
 
 /* ---------- 路由 ---------- */
 const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns,
-                 events:loadEvents, manual:loadManual, config:loadConfig, help:()=>{}};
+                 events:loadEvents, cal:loadCal, manual:loadManual, config:loadConfig, help:()=>{}};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));

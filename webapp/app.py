@@ -131,7 +131,62 @@ def snapshots(limit: int = 250):
 
 @app.get("/api/events")
 def events(limit: int = 200):
-    return q("SELECT * FROM events ORDER BY ts DESC LIMIT ?", (limit,))
+    rows = q("SELECT * FROM events ORDER BY ts DESC LIMIT ?", (limit,))
+    for r in rows:
+        try:  # 服务器本地时间 -> 带时区 ISO, 前端按所选时区显示
+            r["iso"] = datetime.fromisoformat(r["ts"]).astimezone().isoformat()
+        except Exception:
+            r["iso"] = None
+    return rows
+
+
+@app.get("/api/calendar")
+def calendar_month(ym: str = ""):
+    """月历: 交易日/休市/半日市 + 过去日期叠加闸门判定与已实现盈亏 + 持仓财报日。"""
+    import calendar as pycal
+    from datetime import date as _date
+    today = now_et().date()
+    if ym:
+        y, m = map(int, ym.split("-"))
+    else:
+        y, m = today.year, today.month
+    ndays = pycal.monthrange(y, m)[1]
+    days = []
+    for i in range(1, ndays + 1):
+        d = _date(y, m, i)
+        trading = cal.is_trading_day(d)
+        early, close = False, None
+        if trading:
+            c = cal.market_close_et(d)
+            close = c.strftime("%H:%M")
+            early = (c.hour, c.minute) < (16, 0)
+        days.append({"date": str(d), "dow": d.weekday(), "trading": trading,
+                     "early": early, "close": close})
+    like = f"{y:04d}-{m:02d}-%"
+    runs = {r["date"]: r for r in q("SELECT date, gate_pass, vix, spy_pct, n_planned FROM nightly_runs WHERE date LIKE ?", (like,))}
+    realized = {r["d"]: r["pnl"] for r in q(
+        "SELECT exit_date d, ROUND(SUM(pnl),0) pnl FROM lots WHERE state='CLOSED' AND exit_date LIKE ? GROUP BY exit_date", (like,))}
+
+    def fetch_earnings():
+        import yfinance as yf
+        syms = [r["symbol"] for r in q("SELECT DISTINCT symbol FROM lots WHERE state NOT IN ('CLOSED','ERROR')")]
+        out = {}
+        for s in syms:
+            try:
+                edates = yf.Ticker(s).get_earnings_dates(limit=4)
+                if edates is not None:
+                    for ts in edates.index:
+                        out.setdefault(str(ts.date()), []).append(s)
+            except Exception:
+                pass
+        return out
+
+    earnings = cached("earnings", 21600, fetch_earnings)
+    if not isinstance(earnings, dict) or earnings.get("stale") and "error" in earnings:
+        earnings = {}
+    return {"ym": f"{y:04d}-{m:02d}", "today": str(today), "first_dow": _date(y, m, 1).weekday(),
+            "days": days, "runs": runs, "realized": realized,
+            "earnings": {k: v for k, v in earnings.items() if isinstance(v, list) and k.startswith(f"{y:04d}-{m:02d}")}}
 
 
 @app.get("/api/history")
