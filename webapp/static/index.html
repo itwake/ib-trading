@@ -54,6 +54,7 @@
   <span style="flex:1"></span>
   <button class="btn" id="pauseBtn">…</button>
 </header>
+<div id="banner" style="display:none; background:#2a2410; color:var(--amber); padding:6px 24px; font-size:13px; border-bottom:1px solid var(--border);"></div>
 <nav>
   <button data-s="overview" class="active">总览</button>
   <button data-s="lots">交易台账</button>
@@ -136,6 +137,8 @@ function table(el, rows, cols) {
     }).join('')+'</tr>').join('');
 }
 async function j(u, opt){ return (await fetch(u, opt)).json(); }
+async function safeJ(u, opt){ try { const r = await fetch(u, opt); if (!r.ok) throw 0; return await r.json(); } catch(e){ return null; } }
+const stale = d => (d && d.stale) ? ` <span style="color:var(--amber);font-size:11px">(缓存${d.as_of?(' @ '+d.as_of.replace('T',' ')):''})</span>` : '';
 let nextEvent = null;
 setInterval(()=>{ if(!nextEvent) return;
   const dt = (new Date(nextEvent.when) - new Date())/1000;
@@ -145,39 +148,52 @@ setInterval(()=>{ if(!nextEvent) return;
 }, 1000);
 
 async function header_(){
-  const [o, g, ctl] = await Promise.all([j('/api/overview'), j('/api/gate/live'), j('/api/control')]);
-  $('#mode').textContent = 'mode: '+o.mode;
-  $('#mode').className = 'pill '+(o.mode==='live'?'ok':'warn');
-  $('#gw').textContent = o.gateway_ok?'网关正常':'网关无响应';
-  $('#gw').className = 'pill '+(o.gateway_ok?'ok':'bad');
-  $('#clock').textContent = o.now_et;
-  $('#gatepill').textContent = g.passed==null?'闸门: 数据失败':
-    (g.passed?`闸门放行 VIX ${g.vix?.toFixed(1)} SPY ${g.spy_pct?.toFixed(2)}%`
-             :`闸门拦截 VIX ${g.vix?.toFixed(1)} SPY ${g.spy_pct?.toFixed(2)}%`);
-  $('#gatepill').className = 'pill '+(g.passed?'ok':'warn');
-  const paused = ctl.pause_buys && ctl.pause_buys.value==='1';
+  const [o, g, ctl] = await Promise.all([safeJ('/api/overview'), safeJ('/api/gate/live'), safeJ('/api/control')]);
+  if (o){
+    $('#mode').textContent = 'mode: '+o.mode;
+    $('#mode').className = 'pill '+(o.mode==='live'?'ok':'warn');
+    $('#gw').textContent = o.gateway_ok?'网关正常':'网关无响应';
+    $('#gw').className = 'pill '+(o.gateway_ok?'ok':'bad');
+    $('#clock').textContent = o.now_et;
+    const todayEt = o.now_et.split(' ')[0];
+    $('#banner').style.display = (o.target_day!==todayEt)?'block':'none';
+    $('#banner').textContent = '今日休市 · 下一交易日 '+o.target_day+' · 数据为最后一个交易日的状态';
+  } else {
+    $('#gw').textContent = '后端不可用'; $('#gw').className = 'pill bad';
+  }
+  if (g && g.passed!=null){
+    $('#gatepill').innerHTML = (g.passed?'闸门放行':'闸门拦截')+
+      ` VIX ${g.vix!=null?g.vix.toFixed(1):'?'} SPY ${g.spy_pct!=null?g.spy_pct.toFixed(2):'?'}%`+stale(g);
+    $('#gatepill').className = 'pill '+(g.passed?'ok':'warn');
+  } else {
+    $('#gatepill').textContent = '闸门: 数据不可用'; $('#gatepill').className = 'pill bad';
+  }
+  const paused = ctl && ctl.pause_buys && ctl.pause_buys.value==='1';
   $('#pauseBtn').textContent = paused?'▶ 恢复开仓':'⏸ 暂停开仓';
   $('#pauseBtn').className = 'btn '+(paused?'safe':'danger');
   $('#pauseBtn').onclick = async ()=>{
     if (!confirm(paused?'恢复自动开仓？':'暂停自动开仓？(卖出链不受影响)')) return;
-    await j('/api/control/pause_buys/'+(paused?0:1), {method:'POST'}); header_();
+    await safeJ('/api/control/pause_buys/'+(paused?0:1), {method:'POST'}); header_();
   };
   return o;
 }
 async function loadOverview(){
   const o = await header_();
-  const [qt, snaps] = await Promise.all([j('/api/quotes'), j('/api/snapshots')]);
+  const [qt, snaps] = await Promise.all([safeJ('/api/quotes'), safeJ('/api/snapshots')]);
+  if (!o){ $('#ov-cards').innerHTML = '<div class="card"><div class="k">后端不可用</div><div class="v">—</div></div>'; return; }
   const s = o.snapshot||{}, r = o.last_run||{};
+  const unreal = qt?qt.unrealized:null;
   $('#ov-cards').innerHTML = [
-    ['净值', s.netliq!=null?fmt$(s.netliq):'—', s.date||''],
+    ['净值', s.netliq!=null?fmt$(s.netliq):'—', '快照 '+(s.date||'—')],
     ['持仓市值', s.gross!=null?fmt$(s.gross):'—', (o.open_lots.length)+' 个 lot'],
-    ['浮动盈亏(延迟)', `<span class="${cls(qt.unrealized)}">${fmt$(qt.unrealized)}</span>`, ''],
+    ['浮动盈亏(延迟)', `<span class="${cls(unreal)}">${fmt$(unreal)}</span>`, qt&&qt.stale?('缓存 @ '+(qt.as_of||'')):''],
     ['可用资金', s.available!=null?fmt$(s.available):'—', ''],
     ['最近闸门', r.date?(r.gate_pass?'放行':'拦截'):'—', r.date||''],
     ['闸门规则', 'VIX≥'+o.gate_cfg.vix_min+' 或 SPY≤'+o.gate_cfg.spy_max_pct+'%', ''],
   ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
-  table($('#ov-lots'), qt.quotes, [['symbol','代码'],['qty','数量'],['entry_price','成本'],
-    ['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]);
+  table($('#ov-lots'), qt&&qt.quotes?qt.quotes:o.open_lots, qt&&qt.quotes?
+    [['symbol','代码'],['qty','数量'],['entry_price','成本'],['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]:
+    [['symbol','代码'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态']]);
   $('#ov-day').textContent = '('+o.target_day+')';
   table($('#ov-sched'), o.schedule, [['ts','时间 (ET)'],['name','动作']]);
   if (o.schedule.length){
@@ -188,7 +204,7 @@ async function loadOverview(){
       if (when > now){ nextEvent = {name:ev.name, when}; break; }
     }
   }
-  if (snaps.length){
+  if (snaps && snaps.length){
     chart('eq-chart', {type:'line', data:{labels:snaps.map(x=>x.date),
       datasets:[{label:'NetLiq', data:snaps.map(x=>x.netliq), borderColor:'#4a90d9', borderWidth:2, pointRadius:2, tension:.2}]},
       options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},

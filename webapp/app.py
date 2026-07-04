@@ -24,13 +24,56 @@ app = FastAPI(title="ib-trading 观测面板")
 _cache = {}
 
 
+def _sanitize(v):
+    """递归清除 NaN/Inf, 保证 JSON 可序列化。"""
+    import math
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return None
+    if isinstance(v, dict):
+        return {k: _sanitize(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_sanitize(x) for x in v]
+    return v
+
+
+def _kv_set(key, obj):
+    import json
+    conn = sqlite3.connect(cfg["db_path"])
+    conn.execute("CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, json TEXT, updated_at TEXT)")
+    conn.execute("INSERT OR REPLACE INTO kv_cache VALUES (?,?,?)",
+                 (key, json.dumps(obj, ensure_ascii=False), datetime.now().isoformat(timespec="minutes")))
+    conn.commit()
+    conn.close()
+
+
+def _kv_get(key):
+    import json
+    try:
+        rows = q("SELECT json, updated_at FROM kv_cache WHERE key=?", (key,))
+        if rows:
+            return json.loads(rows[0]["json"]), rows[0]["updated_at"]
+    except Exception:
+        pass
+    return None, None
+
+
 def cached(key, ttl, fn):
+    """先内存缓存; 计算失败时回退到 SQLite 里最后一次成功的值 (标注 stale)。"""
     hit = _cache.get(key)
     if hit and time.time() - hit[0] < ttl:
         return hit[1]
-    val = fn()
-    _cache[key] = (time.time(), val)
-    return val
+    try:
+        val = _sanitize(fn())
+        _cache[key] = (time.time(), val)
+        _kv_set(key, val)
+        return val
+    except Exception as e:
+        old, ts = _kv_get(key)
+        if old is not None:
+            if isinstance(old, dict):
+                old = {**old, "stale": True, "as_of": ts}
+            return old
+        return {"error": str(e), "stale": True}
 
 
 def q(sql, args=()):
@@ -104,21 +147,23 @@ def history(limit: int = 2000):
 def gate_live():
     def probe():
         passed, vix, spy, reason = check_gate(cfg)
+        if passed is None:
+            raise RuntimeError(reason)  # 触发回退到最后一次成功值
         return {"passed": passed, "vix": vix, "spy_pct": spy, "reason": reason}
     return cached("gate", 300, probe)
 
 
 @app.get("/api/quotes")
 def quotes():
-    """未平 lot 的延迟报价与浮盈估算 (yfinance, 60s 缓存)。"""
+    """未平 lot 的延迟报价与浮盈估算 (yfinance, 60s 缓存, 失败回退最后成功值)。"""
     lots = q("SELECT symbol, qty, entry_price, target_price FROM lots WHERE state NOT IN ('CLOSED','ERROR')")
     if not lots:
         return {"quotes": [], "unrealized": 0}
 
-    def fetch():
+    def build():
         import yfinance as yf
         syms = sorted({l["symbol"] for l in lots})
-        data = yf.download(syms, period="2d", interval="1d", progress=False,
+        data = yf.download(syms, period="5d", interval="1d", progress=False,
                            auto_adjust=False, group_by="ticker", threads=True)
         px = {}
         for s in syms:
@@ -127,18 +172,20 @@ def quotes():
                 px[s] = float(df["Close"].dropna().iloc[-1])
             except Exception:
                 px[s] = None
-        return px
+        if all(v is None for v in px.values()):
+            raise RuntimeError("行情全部获取失败")
+        out, unreal = [], 0.0
+        for l in lots:
+            p = px.get(l["symbol"])
+            u = (p - l["entry_price"]) * l["qty"] if p else None
+            if u:
+                unreal += u
+            out.append({**l, "last": round(p, 2) if p else None,
+                        "unrealized": round(u, 2) if u is not None else None,
+                        "pct": round((p / l["entry_price"] - 1) * 100, 2) if p else None})
+        return {"quotes": out, "unrealized": round(unreal, 2)}
 
-    px = cached("quotes", 60, fetch)
-    out, unreal = [], 0.0
-    for l in lots:
-        p = px.get(l["symbol"])
-        u = (p - l["entry_price"]) * l["qty"] if p else None
-        if u:
-            unreal += u
-        out.append({**l, "last": p, "unrealized": round(u, 2) if u is not None else None,
-                    "pct": round((p / l["entry_price"] - 1) * 100, 2) if p else None})
-    return {"quotes": out, "unrealized": round(unreal, 2)}
+    return cached("quotes_resp", 60, build)
 
 
 @app.get("/api/lots/summary")

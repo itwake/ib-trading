@@ -14,16 +14,21 @@ def check_gate(cfg):
     if not g.get("enabled", True):
         return True, None, None, "闸门未启用"
     try:
-        vix_df = yf.download("^VIX", period="5d", interval="1d", progress=False, auto_adjust=False)
-        spy_df = yf.download("SPY", period="5d", interval="1d", progress=False, auto_adjust=True)
-        vix_close = vix_df["Close"].squeeze()
-        spy_close = spy_df["Close"].squeeze()
+        import math
+        vix_df = yf.download("^VIX", period="7d", interval="1d", progress=False, auto_adjust=False)
+        spy_df = yf.download("SPY", period="7d", interval="1d", progress=False, auto_adjust=True)
+        vix_close = vix_df["Close"].squeeze().dropna()
+        spy_close = spy_df["Close"].squeeze().dropna()
         vix = float(vix_close.iloc[-1])
         spy_pct = (float(spy_close.iloc[-1]) / float(spy_close.iloc[-2]) - 1) * 100
+        if math.isnan(vix) or math.isnan(spy_pct):
+            raise ValueError("NaN in market data")
+        as_of = str(vix_close.index[-1].date()) if hasattr(vix_close.index[-1], "date") else ""
     except Exception as e:
         log.error("闸门数据获取失败: %s", e)
         return None, None, None, f"数据获取失败: {e}"
 
     passed = (vix >= g["vix_min"]) or (spy_pct <= g["spy_max_pct"])
-    reason = f"VIX={vix:.1f} (阈值>={g['vix_min']}), SPY当日={spy_pct:+.2f}% (阈值<={g['spy_max_pct']}%)"
+    reason = (f"VIX={vix:.1f} (阈值>={g['vix_min']}), SPY当日={spy_pct:+.2f}% "
+              f"(阈值<={g['spy_max_pct']}%), 数据截至 {as_of}")
     return passed, vix, spy_pct, reason
