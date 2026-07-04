@@ -42,7 +42,6 @@
   .filters .btn.on { border-color:var(--blue); color:var(--blue); }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
   @media (max-width:800px){ .grid2{ grid-template-columns:1fr; } }
-  [data-tip] { cursor:help; }
   #tooltip { position:fixed; z-index:1000; max-width:340px; background:#0d1117; border:1px solid var(--blue);
              border-radius:8px; padding:10px 12px; font-size:12.5px; line-height:1.7; color:var(--text);
              display:none; pointer-events:none; box-shadow:0 8px 24px rgba(0,0,0,.5); white-space:normal; }
@@ -226,17 +225,24 @@ const stale = d => (d && d.stale) ? ` <span style="color:var(--amber);font-size:
 
 /* ---------- Tooltip 引擎 ---------- */
 const tip = $('#tooltip');
+let tipTimer = null, tipTarget = null;
 document.addEventListener('mouseover', e => {
   const t = e.target.closest('[data-tip]');
-  if (!t) { tip.style.display='none'; return; }
-  tip.textContent = t.dataset.tip;
-  tip.style.display = 'block';
-  const r = t.getBoundingClientRect();
-  let x = Math.min(r.left, innerWidth - 360), y = r.bottom + 8;
-  if (y + tip.offsetHeight > innerHeight - 10) y = r.top - tip.offsetHeight - 8;
-  tip.style.left = Math.max(8,x)+'px'; tip.style.top = y+'px';
+  if (t === tipTarget) return;
+  clearTimeout(tipTimer);
+  tip.style.display = 'none';
+  tipTarget = t;
+  if (!t || !t.dataset.tip) return;
+  tipTimer = setTimeout(() => {
+    tip.textContent = t.dataset.tip;
+    tip.style.display = 'block';
+    const r = t.getBoundingClientRect();
+    let x = Math.min(r.left, innerWidth - 360), y = r.bottom + 8;
+    if (y + tip.offsetHeight > innerHeight - 10) y = r.top - tip.offsetHeight - 8;
+    tip.style.left = Math.max(8,x)+'px'; tip.style.top = y+'px';
+  }, 500);
 });
-document.addEventListener('scroll', ()=>{ tip.style.display='none'; }, true);
+document.addEventListener('scroll', ()=>{ clearTimeout(tipTimer); tip.style.display='none'; tipTarget=null; }, true);
 
 /* ---------- Modal 组件 (替代原生 alert/confirm/prompt) ---------- */
 function modal({title, body, input=null, typed=null, danger=false, okText='确认', cancelText='取消'}){
