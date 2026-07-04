@@ -11,7 +11,7 @@
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
   header { padding:12px 24px; border-bottom:1px solid var(--border); display:flex; gap:12px; align-items:center; flex-wrap:wrap;}
   header h1 { font-size:18px; margin:0 12px 0 0; font-weight:600; }
-  .pill { padding:2px 10px; border-radius:12px; font-size:12px; border:1px solid var(--border); }
+  .pill { padding:2px 10px; border-radius:12px; font-size:12px; border:1px solid var(--border); cursor:default; }
   .ok { color:var(--green); border-color:var(--green); }
   .bad { color:var(--red); border-color:var(--red); }
   .warn { color:var(--amber); border-color:var(--amber); }
@@ -37,45 +37,71 @@
          padding:6px 14px; cursor:pointer; font-size:13px; }
   .btn.danger { border-color:var(--red); color:var(--red); }
   .btn.safe { border-color:var(--green); color:var(--green); }
+  .btn.primary { border-color:var(--blue); color:var(--blue); }
   .filters { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
   .filters .btn.on { border-color:var(--blue); color:var(--blue); }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
   @media (max-width:800px){ .grid2{ grid-template-columns:1fr; } }
+  [data-tip] { cursor:help; }
+  #tooltip { position:fixed; z-index:1000; max-width:340px; background:#0d1117; border:1px solid var(--blue);
+             border-radius:8px; padding:10px 12px; font-size:12.5px; line-height:1.7; color:var(--text);
+             display:none; pointer-events:none; box-shadow:0 8px 24px rgba(0,0,0,.5); white-space:normal; }
+  #modal-mask { position:fixed; inset:0; z-index:900; background:rgba(0,0,0,.6); display:none;
+                align-items:center; justify-content:center; }
+  #modal { background:var(--card); border:1px solid var(--border); border-radius:12px; width:min(440px, 92vw);
+           padding:20px 22px; }
+  #modal h4 { margin:0 0 10px; font-size:16px; }
+  #modal .body { font-size:13.5px; color:var(--muted); line-height:1.8; margin-bottom:14px; white-space:pre-wrap; }
+  #modal input { width:100%; background:var(--bg); color:var(--text); border:1px solid var(--border);
+                 border-radius:6px; padding:8px 10px; margin-bottom:14px; font-size:14px; }
+  #modal .row { display:flex; gap:8px; justify-content:flex-end; }
+  #toasts { position:fixed; right:16px; bottom:16px; z-index:950; display:flex; flex-direction:column; gap:8px; }
+  .toast { background:#0d1117; border:1px solid var(--border); border-left:3px solid var(--blue); border-radius:8px;
+           padding:10px 14px; font-size:13px; max-width:380px; animation:slidein .2s; white-space:pre-wrap; }
+  .toast.ok { border-left-color:var(--green); } .toast.err { border-left-color:var(--red); }
+  @keyframes slidein { from { transform:translateX(30px); opacity:0; } }
+  .tour-hl { outline:2px solid var(--blue); outline-offset:3px; border-radius:6px; position:relative; z-index:920; }
+  .help-block { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px 20px; margin-bottom:14px; }
+  .help-block h4 { margin:0 0 8px; font-size:15px; color:var(--text); }
+  .help-block p, .help-block li { font-size:13.5px; color:var(--muted); line-height:1.9; }
+  .help-block code { background:#0d1117; padding:1px 6px; border-radius:4px; font-size:12.5px; }
+  kbd.state { background:#0d1117; border:1px solid var(--border); border-radius:4px; padding:0 6px; font-size:12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>ib-trading</h1>
-  <span class="pill" id="mode">…</span>
-  <span class="pill" id="gw">网关…</span>
-  <span class="pill" id="gatepill">闸门…</span>
-  <span class="pill" id="clock">…</span>
-  <span class="pill" id="countdown">…</span>
+  <span class="pill" id="mode" data-tip="运行模式。dry＝演练：所有订单只记日志和播报，不会真实发送到 IB；live＝实盘：真实下单。在「配置」页切换，切 live 需输入确认词。">…</span>
+  <span class="pill" id="gw" data-tip="经 SSH 隧道探测家中 IB Gateway 的 API 端口（每次刷新时实测）。「无响应」通常是：① Windows 上的隧道断了；② Gateway 掉线或 API 挂死。守护进程每 10 分钟也会探测并在状态变化时推送 Discord。">网关…</span>
+  <span class="pill" id="gatepill" data-tip="环境闸门的实时判定（15 分钟延迟数据，5 分钟缓存）。规则：VIX ≥ 阈值 或 SPY 当日跌幅 ≤ 阈值，任一满足＝今晚可开仓。依据：全年实盘审计显示放行日单笔收益约为拦截日的 2.6 倍，且最差的隔夜暴雷多发生在拦截日。">闸门…</span>
+  <span class="pill" id="clock" data-tip="服务器时间（美东 ET）。所有自动动作按交易所时间触发，与显示时区无关。">…</span>
+  <span class="pill" id="countdown" data-tip="守护进程的下一个自动动作及倒计时。完整时刻表见总览页右下角。">…</span>
   <span style="flex:1"></span>
-  <button class="btn" id="pauseBtn">…</button>
+  <button class="btn" id="pauseBtn" data-tip="紧急开关：暂停后每晚的自动买入停止（闸门直接判拦截），但卖出链（隔夜限价、盘前限价、开盘追踪）继续正常工作，已有持仓不受影响。适合休假、行情异常等场景。">…</button>
 </header>
 <div id="banner" style="display:none; background:#2a2410; color:var(--amber); padding:6px 24px; font-size:13px; border-bottom:1px solid var(--border);"></div>
 <nav>
-  <button data-s="overview" class="active">总览</button>
-  <button data-s="lots">交易台账</button>
-  <button data-s="history">全年历史</button>
-  <button data-s="runs">每晚决策</button>
-  <button data-s="events">事件日志</button>
-  <button data-s="manual" style="color:var(--amber)">手动操作</button>
-  <button data-s="config">配置</button>
+  <button data-s="overview" class="active" data-tip="账户概况、持仓浮盈、净值曲线、今日自动动作时刻表">总览</button>
+  <button data-s="lots" data-tip="系统经手的每一笔 lot（一笔买入=一个 lot）：入场、目标、出场、盈亏，以及三种出场规则的影子对比实验">交易台账</button>
+  <button data-s="history" data-tip="上线前一整年的真实成交审计（1298 笔），按策略类型分账，作为策略基准">全年历史</button>
+  <button data-s="runs" data-tip="每晚闸门的判定记录：VIX/SPY 数值、放行/拦截、计划买入数与预算">每晚决策</button>
+  <button data-s="events" data-tip="系统事件流水：手动操作、配置修改、异常告警，全部留痕">事件日志</button>
+  <button data-s="manual" style="color:var(--amber)" data-tip="自动化的手动兜底：单步触发流程、单仓位应急卖出、一键清仓。不依赖守护进程，面板独立连接 IB">手动操作</button>
+  <button data-s="config" data-tip="闸门规则、下单规则、风控阈值、通知、dry/live 切换、显示时区">配置</button>
+  <button data-s="help" data-tip="系统说明、快速上手、常见问题">帮助</button>
 </nav>
 <main>
   <section id="overview" class="section active">
     <div class="cards" id="ov-cards"></div>
     <div class="grid2">
       <div>
-        <h3>持仓（延迟报价）</h3>
+        <h3 data-tip="当前未平仓的 lot，现价为 15 分钟延迟行情（每 60 秒刷新）。目标价＝成本×(1+止盈%)，隔夜/盘前/日内的限价卖单都挂在这个价位。">持仓（延迟报价）ⓘ</h3>
         <div class="scroll"><table id="ov-lots"></table></div>
       </div>
       <div>
-        <h3>净值曲线（每日快照）</h3>
+        <h3 data-tip="每日收盘后记录一次账户净值快照（NetLiquidation＝现金+持仓市值）。">净值曲线（每日快照）ⓘ</h3>
         <div class="chartbox" style="height:240px"><canvas id="eq-chart"></canvas></div>
-        <h3>事件表 <span id="ov-day" style="color:var(--muted)"></span></h3>
+        <h3 data-tip="守护进程今天/下一交易日的自动动作。时间按交易所日历自动计算，假日跳过、半日市自动前移。显示时区可在配置页切换。">事件表 ⓘ <span id="ov-day" style="color:var(--muted)"></span></h3>
         <div class="scroll" style="max-height:220px"><table id="ov-sched"></table></div>
       </div>
     </div>
@@ -103,7 +129,7 @@
     <div class="card" style="margin-bottom:14px;">
       <div class="k">说明</div>
       <div style="font-size:13px; color:var(--muted); line-height:1.7;">
-        以下操作<b style="color:var(--text)">不依赖守护进程</b>（面板独立连接 IB），自动流程出问题时可手动兜底。
+        以下操作<b style="color:var(--text)">不依赖守护进程</b>（面板用独立连接直达 IB），自动流程出问题时可手动兜底。
         当前 <span id="m-mode" class="pill">…</span>，dry 模式下所有订单只记日志不真实发送。每次操作都会写事件日志并推送 Discord。
       </div>
     </div>
@@ -113,8 +139,8 @@
     <div class="scroll"><table id="m-lots"></table></div>
     <h3 style="color:var(--red)">危险区</h3>
     <div class="filters">
-      <button class="btn danger" id="m-cancel">撤销全部在途卖单</button>
-      <button class="btn danger" id="m-flatten">一键清仓（全部市价卖出）</button>
+      <button class="btn danger" id="m-cancel" data-tip="撤销账户中所有在途卖单（不动持仓本身）。用于：想重新挂单、或换出场方式之前清场。">撤销全部在途卖单</button>
+      <button class="btn danger" id="m-flatten" data-tip="对所有持仓提交市价卖出（先自动撤掉在途卖单）。这是最后手段：市价单保证成交但不保证价格，仅建议盘中流动性好时使用。需输入 FLATTEN 确认。">一键清仓（全部市价卖出）</button>
     </div>
     <h3>操作结果</h3>
     <div class="card"><pre id="m-log" style="margin:0; font-size:12px; white-space:pre-wrap; max-height:200px; overflow:auto;">—</pre></div>
@@ -122,22 +148,71 @@
   <section id="config" class="section">
     <div id="cfg-form"></div>
     <div class="filters" style="margin-top:16px;">
-      <button class="btn safe" id="cfg-save">保存配置</button>
-      <button class="btn" id="cfg-restart">重启守护进程（立即生效）</button>
+      <button class="btn safe" id="cfg-save" data-tip="校验并写入服务器 config.json；变更会记录到事件日志并推送 Discord。">保存配置</button>
+      <button class="btn" id="cfg-restart" data-tip="守护进程本来会在下一个循环自动热加载新配置；点这里立即重启使其马上生效。不影响已挂在交易所的订单。">重启守护进程（立即生效）</button>
     </div>
     <div class="card" style="margin-top:12px;"><pre id="cfg-log" style="margin:0; font-size:12px; white-space:pre-wrap;">修改会写入 config.json、记录事件并推送 Discord。守护进程每个循环自动热加载，或点重启立即生效。</pre></div>
   </section>
+  <section id="help" class="section">
+    <div class="filters"><button class="btn primary" id="tour-btn">▶ 开始新手引导（逐页讲解）</button></div>
+    <div class="help-block">
+      <h4>这个系统是什么？</h4>
+      <p>一套全自动执行的美股短线策略：<b>收盘前筛选当日大跌的中大盘股 → 收盘竞价（MOC）买入 → 当晚起挂 +1.5% 限价卖出 → 次日开盘后改 0.3% 追踪卖出，当日必清仓</b>。
+      开不开仓由「环境闸门」决定（VIX 或大盘跌幅达标才做，依据是全年真实成交审计：恐慌日的反弹显著可靠，平静日的个股暴跌容易继续跌）。
+      所有动作按交易所日历自动触发，每一步都推送 Discord。</p>
+    </div>
+    <div class="help-block">
+      <h4>一个交易日的完整流程（美东时间）</h4>
+      <p>15:33 闸门判定 → 15:38 选股与预算分配 → 15:45 提交 MOC 买单（收盘价成交）→ 16:10 成交入台账 →
+      20:05 挂隔夜限价卖单（+1.5%，IBKR 隔夜时段 20:00~次日3:50）→ 次日 04:05 挂盘前限价 →
+      09:31 撤限价改 0.3% 追踪卖出 → 16:20 对账+日报。<br>
+      没到 +1.5% 也会被追踪单在当天卖掉——<b>系统永远不留隔夜库存超过一晚</b>（除非停牌等异常，会告警）。</p>
+    </div>
+    <div class="help-block">
+      <h4>快速上手（当前是 dry 演练模式）</h4>
+      <p>1️⃣ 看「总览」：确认网关正常（绿色）、有净值快照、事件表时间合理；<br>
+      2️⃣ 交易日盯 Discord：每个自动动作都会播报，对照「事件表」检查是否按点执行；<br>
+      3️⃣ 看「每晚决策」：确认闸门判定和你的预期一致（VIX/SPY 数值都有记录）；<br>
+      4️⃣ dry 跑顺 2~3 个交易日后 →「配置」页把 mode 切成 <code>live</code>（需输入 LIVE）→ 建议先把「每晚预算」调小（如 5000）跑一周 → 再逐步加回；<br>
+      5️⃣ 任何时候想停：右上角「⏸ 暂停开仓」（持仓照常卖出）；想彻底跑路：「手动操作」页一键清仓。</p>
+    </div>
+    <div class="help-block">
+      <h4>lot 状态含义（交易台账/持仓表里的"状态"列）</h4>
+      <p><kbd class="state">FILLED</kbd> 已买入，还没挂卖单 → <kbd class="state">OVERNIGHT</kbd> 隔夜限价卖单已挂 →
+      <kbd class="state">PREMARKET</kbd> 盘前限价已挂 → <kbd class="state">TRAILING</kbd> 开盘后追踪卖单已挂 →
+      <kbd class="state">CLOSED</kbd> 已平仓（出场价和盈亏来自 IB 真实成交回填）。</p>
+    </div>
+    <div class="help-block">
+      <h4>常见问题</h4>
+      <p><b>页面某处显示"缓存 @ 时间"？</b> 该数据源（如 Yahoo 行情）暂时取不到，系统自动显示最后一次成功的值并标注时间，不影响交易（交易走 IB 通道）。<br>
+      <b>网关显示无响应？</b> 检查家中 Windows：① 隧道任务在跑吗；② Gateway 登录着吗。守护进程会持续告警直到恢复；期间自动买入会失败并播报，已挂在交易所的卖单不受影响。<br>
+      <b>今晚为什么没买？</b> 看「每晚决策」：要么闸门拦截（VIX/SPY 未达标），要么可用资金低于下限，要么你按了暂停。<br>
+      <b>闸门太严/太松？</b>「配置」页调 VIX 阈值：17 折中（历史约 40~75% 的晚上放行）、19 保守（约 25~50%）。<br>
+      <b>影子 T+1/T+2 是什么？</b> 每笔真实平仓后，系统自动计算"如果按 T+1/T+2 收盘强制离场会赚多少"，攒一个月数据就能用实盘对比三种出场规则（交易台账页顶部）。<br>
+      <b>怎么彻底停止系统？</b> 服务器上 <code>systemctl stop autotrader</code>；或者面板「暂停开仓」+ 手动清仓，守护进程留着继续做对账和告警。</p>
+    </div>
+    <div class="help-block">
+      <h4>术语表</h4>
+      <p><b>MOC</b>＝Market-On-Close，收盘竞价市价单，按官方收盘价成交；<b>OVERNIGHT</b>＝IBKR 隔夜交易时段（美东 20:00~3:50，仅限价单，单场次有效）；
+      <b>TRAIL 0.3%</b>＝追踪卖出：价格从最高点回落 0.3% 即触发；<b>VIX</b>＝恐慌指数，越高市场越动荡；
+      <b>NetLiq</b>＝净清算价值（现金+持仓）；<b>可用资金</b>＝还能动用的保证金余量，太低有强平风险；
+      <b>lot</b>＝一笔买入形成的一个仓位单元，各自独立管理目标价。</p>
+    </div>
+  </section>
 </main>
+<div id="tooltip"></div>
+<div id="modal-mask"><div id="modal"></div></div>
+<div id="toasts"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const fmt$ = v => (v==null?'—':(v<0?'-':'')+'$'+Math.abs(Math.round(v)).toLocaleString());
 const cls = v => v>0?'pos':(v<0?'neg':'');
 const charts = {};
-function chart(id, cfg){ if(charts[id]) charts[id].destroy(); charts[id]=new Chart($(id.startsWith('#')?id:'#'+id), cfg); }
+function chart(id, cfg){ if(charts[id]) charts[id].destroy(); charts[id]=new Chart($('#'+id), cfg); }
 function table(el, rows, cols) {
   if (!rows.length) { el.innerHTML = '<tr><td style="color:var(--muted)">暂无数据</td></tr>'; return; }
-  el.innerHTML = '<tr>'+cols.map(c=>'<th>'+c[1]+'</th>').join('')+'</tr>' +
+  el.innerHTML = '<tr>'+cols.map(c=>'<th'+(c[3]?` data-tip="${c[3]}"`:'')+'>'+c[1]+'</th>').join('')+'</tr>' +
     rows.map(r=>'<tr>'+cols.map(c=>{
       let v = r[c[0]];
       if (c[2]==='$') return `<td class="${cls(v)}">${fmt$(v)}</td>`;
@@ -148,14 +223,68 @@ function table(el, rows, cols) {
 async function j(u, opt){ return (await fetch(u, opt)).json(); }
 async function safeJ(u, opt){ try { const r = await fetch(u, opt); if (!r.ok) throw 0; return await r.json(); } catch(e){ return null; } }
 const stale = d => (d && d.stale) ? ` <span style="color:var(--amber);font-size:11px">(缓存${d.as_of?(' @ '+d.as_of.replace('T',' ')):''})</span>` : '';
+
+/* ---------- Tooltip 引擎 ---------- */
+const tip = $('#tooltip');
+document.addEventListener('mouseover', e => {
+  const t = e.target.closest('[data-tip]');
+  if (!t) { tip.style.display='none'; return; }
+  tip.textContent = t.dataset.tip;
+  tip.style.display = 'block';
+  const r = t.getBoundingClientRect();
+  let x = Math.min(r.left, innerWidth - 360), y = r.bottom + 8;
+  if (y + tip.offsetHeight > innerHeight - 10) y = r.top - tip.offsetHeight - 8;
+  tip.style.left = Math.max(8,x)+'px'; tip.style.top = y+'px';
+});
+document.addEventListener('scroll', ()=>{ tip.style.display='none'; }, true);
+
+/* ---------- Modal 组件 (替代原生 alert/confirm/prompt) ---------- */
+function modal({title, body, input=null, typed=null, danger=false, okText='确认', cancelText='取消'}){
+  return new Promise(resolve=>{
+    const mask = $('#modal-mask'), m = $('#modal');
+    m.innerHTML = `<h4>${title}</h4><div class="body">${body||''}</div>` +
+      (input!==null?`<input id="mo-in" value="${input===true?'':input}" placeholder="${typed?('输入 '+typed+' 以确认'):''}">`:'') +
+      `<div class="row"><button class="btn" id="mo-cancel">${cancelText}</button>
+       <button class="btn ${danger?'danger':'primary'}" id="mo-ok">${okText}</button></div>`;
+    mask.style.display = 'flex';
+    const done = v => { mask.style.display='none'; resolve(v); };
+    $('#mo-cancel').onclick = ()=>done(null);
+    mask.onclick = e => { if (e.target===mask) done(null); };
+    $('#mo-ok').onclick = ()=>{
+      if (typed){ if (($('#mo-in')?.value||'') !== typed){ toast('确认词不符，已取消', 'err'); return done(null); } return done(true); }
+      if (input!==null) return done($('#mo-in').value);
+      done(true);
+    };
+    const inp = $('#mo-in'); if (inp) inp.focus();
+  });
+}
+const uiConfirm = (title, body, danger=false) => modal({title, body, danger});
+const uiTyped = (title, body, word) => modal({title, body, input:true, typed:word, danger:true, okText:'我已知晓，执行'});
+const uiPrompt = (title, body, def='') => modal({title, body, input:def});
+function toast(msg, type=''){
+  const box = $('#toasts'); const el = document.createElement('div');
+  el.className = 'toast '+type; el.textContent = msg; box.appendChild(el);
+  setTimeout(()=>el.remove(), 6000);
+}
+
+/* ---------- 时区 ---------- */
+const TZS = {'America/New_York':'美东', 'Asia/Shanghai':'北京', 'local':'本地'};
+const getTz = () => localStorage.getItem('displayTz') || 'America/New_York';
+function fmtTs(iso){
+  const tz = getTz();
+  const opt = {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false};
+  if (tz !== 'local') opt.timeZone = tz;
+  return new Date(iso).toLocaleString('zh-CN', opt) + ' ' + (TZS[tz]||'');
+}
 let nextEvent = null;
 setInterval(()=>{ if(!nextEvent) return;
-  const dt = (new Date(nextEvent.when) - new Date())/1000;
+  const dt = (nextEvent.when - new Date())/1000;
   if (dt<0) { $('#countdown').textContent = nextEvent.name+' 执行中…'; return; }
   const h = Math.floor(dt/3600), m = Math.floor(dt%3600/60);
   $('#countdown').textContent = `下一动作 ${nextEvent.name} ${h}h${m}m`;
 }, 1000);
 
+/* ---------- 总览 ---------- */
 async function header_(){
   const [o, g, ctl] = await Promise.all([safeJ('/api/overview'), safeJ('/api/gate/live'), safeJ('/api/control')]);
   if (o){
@@ -181,8 +310,11 @@ async function header_(){
   $('#pauseBtn').textContent = paused?'▶ 恢复开仓':'⏸ 暂停开仓';
   $('#pauseBtn').className = 'btn '+(paused?'safe':'danger');
   $('#pauseBtn').onclick = async ()=>{
-    if (!confirm(paused?'恢复自动开仓？':'暂停自动开仓？(卖出链不受影响)')) return;
-    await safeJ('/api/control/pause_buys/'+(paused?0:1), {method:'POST'}); header_();
+    const ok = await uiConfirm(paused?'恢复自动开仓':'暂停自动开仓',
+      paused?'恢复后每晚按闸门规则正常买入。':'暂停后每晚不再自动买入；卖出链（隔夜/盘前/追踪）不受影响，已有持仓照常离场。', !paused);
+    if (!ok) return;
+    await safeJ('/api/control/pause_buys/'+(paused?0:1), {method:'POST'});
+    toast(paused?'已恢复自动开仓':'已暂停自动开仓', 'ok'); header_();
   };
   return o;
 }
@@ -192,6 +324,14 @@ async function loadOverview(){
   if (!o){ $('#ov-cards').innerHTML = '<div class="card"><div class="k">后端不可用</div><div class="v">—</div></div>'; return; }
   const s = o.snapshot||{}, r = o.last_run||{};
   const unreal = qt?qt.unrealized:null;
+  const tips = {
+    '净值':'NetLiquidation＝现金+持仓市值。每天收盘后的日报快照，非实时。',
+    '持仓市值':'最近快照的总持仓市值；lot 数为当前台账未平数。',
+    '浮动盈亏(延迟)':'按 15 分钟延迟行情估算的未实现盈亏，仅供参考；成交以 IB 为准。',
+    '可用资金':'保证金余量。低于配置下限则今晚不开仓；低于净值的告警线（默认12%）会触发 Discord 强平预警。',
+    '最近闸门':'守护进程最近一次收盘前的闸门判定结果。',
+    '闸门规则':'当前配置的阈值，可在「配置」页调整。'
+  };
   $('#ov-cards').innerHTML = [
     ['净值', s.netliq!=null?fmt$(s.netliq):'—', '快照 '+(s.date||'—')],
     ['持仓市值', s.gross!=null?fmt$(s.gross):'—', (o.open_lots.length)+' 个 lot'],
@@ -199,10 +339,10 @@ async function loadOverview(){
     ['可用资金', s.available!=null?fmt$(s.available):'—', ''],
     ['最近闸门', r.date?(r.gate_pass?'放行':'拦截'):'—', r.date||''],
     ['闸门规则', 'VIX≥'+o.gate_cfg.vix_min+' 或 SPY≤'+o.gate_cfg.spy_max_pct+'%', ''],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
+  ].map(c=>`<div class="card" data-tip="${tips[c[0]]||''}"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
   table($('#ov-lots'), qt&&qt.quotes?qt.quotes:o.open_lots, qt&&qt.quotes?
     [['symbol','代码'],['qty','数量'],['entry_price','成本'],['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]:
-    [['symbol','代码'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态']]);
+    [['symbol','代码'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态','', '状态含义见「帮助」页：FILLED已买入→OVERNIGHT隔夜卖单→PREMARKET盘前→TRAILING追踪→CLOSED已平']]);
   $('#ov-day').textContent = '('+o.target_day+')';
   const sched = o.schedule.map(ev=>({name:ev.name, 显示:ev.iso?fmtTs(ev.iso):ev.ts}));
   table($('#ov-sched'), sched, [['显示','时间'],['name','动作']]);
@@ -218,29 +358,45 @@ async function loadOverview(){
                 y:{ticks:{color:'#8b95a3', callback:v=>'$'+(v/1000)+'k'}, grid:{color:'#2a323d'}}}}});
   }
 }
+
+/* ---------- 台账 ---------- */
 let lotFilter = '全部';
 async function loadLots(){
   const [rows, sum, sh] = await Promise.all([j('/api/lots'), j('/api/lots/summary'), j('/api/shadow/summary')]);
   const s = sh.summary||{};
+  const tips = {
+    '出场实验: 实际':'同一批已平仓 lot 的真实盈亏合计（按你的流程：隔夜+1.5%限价→盘前限价→开盘0.3%追踪）。',
+    '影子 T+1 收盘':'同一批 lot 如果改用「次日收盘还没到+1.5%就强制卖出」规则的假想盈亏。数据自动回填。',
+    '影子 T+2 收盘':'同上，但给两天时间。攒一个月数据即可用你自己的实盘裁决三种出场规则谁更好。'
+  };
   $('#l-cards').innerHTML = [
     ['已平仓笔数', sum.n||0, ''], ['累计已实现', fmt$(sum.pnl), ''],
     ['胜率', sum.n?Math.round(100*sum.wins/sum.n)+'%':'—', ''],
     ['出场实验: 实际', s.n?fmt$(s.actual):'—', s.n?('同批 '+s.n+' 笔'):'积累数据中'],
     ['影子 T+1 收盘', s.n?fmt$(s.t1):'—', ''],
     ['影子 T+2 收盘', s.n?fmt$(s.t2):'—', ''],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
+  ].map(c=>`<div class="card" data-tip="${tips[c[0]]||''}"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
   const states = ['全部', ...new Set(rows.map(r=>r.state))];
-  $('#l-filters').innerHTML = states.map(s=>`<button class="btn ${s===lotFilter?'on':''}" data-f="${s}">${s}</button>`).join('');
+  $('#l-filters').innerHTML = states.map(st=>`<button class="btn ${st===lotFilter?'on':''}" data-f="${st}">${st}</button>`).join('');
   document.querySelectorAll('#l-filters .btn').forEach(b=>b.onclick=()=>{ lotFilter=b.dataset.f; loadLots(); });
   const view = lotFilter==='全部'?rows:rows.filter(r=>r.state===lotFilter);
   table($('#t-lots'), view, [['lot_id','ID'],['symbol','代码'],['entry_date','入场'],['qty','数量'],
-    ['entry_price','成本'],['target_price','目标'],['state','状态'],
-    ['exit_date','出场日'],['exit_price','出场价'],['exit_how','方式'],['pnl','盈亏','$']]);
+    ['entry_price','成本'],['target_price','目标'],
+    ['state','状态','', 'FILLED已买入→OVERNIGHT隔夜卖单已挂→PREMARKET盘前限价→TRAILING追踪→CLOSED已平仓'],
+    ['exit_date','出场日'],['exit_price','出场价'],['exit_how','方式','', 'fill@xx＝按当日真实成交回填；resync＝仅对账关闭(缺成交明细)'],
+    ['pnl','盈亏','$'],['shadow_t1','影子T+1','$','若当时用T+1收盘强制离场的假想盈亏'],['shadow_t2','影子T+2','$','若当时用T+2收盘强制离场的假想盈亏']]);
 }
+
+/* ---------- 历史 ---------- */
 async function loadHistory(){
   const sum = await j('/api/history/summary');
+  const tips = {
+    'A.纪律单(次日内出)':'脚本 MOC 买入且次一交易日内清仓——策略的盈利引擎，全年 938 笔胜率 70%。',
+    'B.策略单被扛(>1天)':'脚本买入但持有超过 1 天（违反出场纪律）——全年只发生过一次（2026-03-02 批次），合计 -$1,578。',
+    'C.手动入场':'非脚本（手动）买入的交易——2025 下半年小赚，2026 年转为净亏损。'
+  };
   $('#h-cards').innerHTML = sum.by_bucket.map(b=>
-    `<div class="card"><div class="k">${b.bucket}（${b.n} 笔，胜率 ${b.win_rate}%）</div>
+    `<div class="card" data-tip="${tips[b.bucket]||''}"><div class="k">${b.bucket}（${b.n} 笔，胜率 ${b.win_rate}%）</div>
      <div class="v ${cls(b.pnl)}">${fmt$(b.pnl)}</div></div>`).join('')||'<div class="card">尚未导入历史</div>';
   if (sum.by_month.length){
     let cum=0; const cumd = sum.by_month.map(m=>({x:m.ym, y:(cum+=m.pnl)}));
@@ -263,94 +419,40 @@ async function loadHistory(){
 async function loadRuns(){
   const rows = await j('/api/runs');
   rows.forEach(r=>r.gate_pass = r.gate_pass? '✅ 放行':'⛔ 拦截');
-  table($('#t-runs'), rows, [['date','日期'],['gate_pass','闸门'],['vix','VIX'],['spy_pct','SPY%'],
+  table($('#t-runs'), rows, [['date','日期'],['gate_pass','闸门'],
+    ['vix','VIX','', '当晚判定时的 VIX 值；≥阈值即放行'],['spy_pct','SPY%','', '当晚判定时 SPY 的当日涨跌；≤阈值即放行'],
     ['n_planned','计划数'],['budget','预算'],['note','备注']]);
 }
-async function loadEvents(){ table($('#t-events'), await j('/api/events'), [['ts','时间'],['kind','类型'],['detail','详情']]); }
+async function loadEvents(){ table($('#t-events'), await j('/api/events'), [['ts','时间'],['kind','类型','', 'manual=手动操作 config=配置修改'],['detail','详情']]); }
 
+/* ---------- 手动操作 ---------- */
 const STEPS = {overnight_sells:'挂隔夜卖单', premarket_sells:'挂盘前卖单', open_trail:'改挂追踪单',
   confirm_fills:'成交确认', daily_report:'对账+日报', buy_flow:'闸门+买入流程'};
-const TZS = {'America/New_York':'美东', 'Asia/Shanghai':'北京', 'local':'本地'};
-const getTz = () => localStorage.getItem('displayTz') || 'America/New_York';
-function fmtTs(iso){
-  const tz = getTz();
-  const opt = {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false};
-  if (tz !== 'local') opt.timeZone = tz;
-  return new Date(iso).toLocaleString('zh-CN', opt) + ' ' + (TZS[tz]||'');
-}
-const CFG_GROUPS = [
-  ['运行', [['mode','运行模式 (dry=演练 / live=实盘)']]],
-  ['环境闸门', [['gate.enabled','启用闸门'], ['gate.vix_min','VIX 阈值 (≥ 放行)'], ['gate.spy_max_pct','SPY 当日跌幅阈值 % (≤ 放行)']]],
-  ['下单规则', [['budget.nightly_max_usd','每晚预算上限 $'], ['budget.gross_max_x_netliq','总持仓上限 (×净值)'],
-    ['budget.min_available_funds_usd','可用资金下限 $ (低于不开仓)'], ['budget.per_stock_max_pct','单股占预算上限 %'],
-    ['screener.n_stocks','每晚选股数'], ['screener.skip_rank','跳过跌幅榜前 N 名'], ['screener.lot_size','股数取整 (手)'],
-    ['exits.overnight_target_pct','止盈目标 %'], ['exits.trail_pct','追踪回撤 %']]],
-  ['风控与通知', [['risk.cushion_alert_pct','保证金缓冲告警线 %'], ['notify.heartbeat_minutes','心跳间隔 (分钟, 0=关)'],
-    ['notify.discord_webhook','Discord Webhook']]],
-];
-let cfgLoaded = {};
-async function loadConfig(){
-  const d = await safeJ('/api/config');
-  if (!d){ $('#cfg-form').innerHTML = '<div class="card">配置接口不可用</div>'; return; }
-  cfgLoaded = d.fields;
-  let html = `<div class="card" style="margin-bottom:14px;"><div class="k">显示时区（仅影响本浏览器）</div>
-    <select id="tz-sel" style="margin-top:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;">
-    ${Object.entries(TZS).map(([k,v])=>`<option value="${k}" ${getTz()===k?'selected':''}>${v}${k!=='local'?' ('+k+')':''}</option>`).join('')}
-    </select></div>`;
-  for (const [title, fields] of CFG_GROUPS){
-    html += `<h3>${title}</h3><div class="cards">` + fields.map(([key,label])=>{
-      const v = cfgLoaded[key];
-      let input;
-      if (key==='mode') input = `<select data-k="${key}"><option value="dry" ${v==='dry'?'selected':''}>dry</option><option value="live" ${v==='live'?'selected':''}>live</option></select>`;
-      else if (key==='gate.enabled') input = `<input type="checkbox" data-k="${key}" ${v?'checked':''} style="width:18px;height:18px;">`;
-      else input = `<input data-k="${key}" value="${v==null?'':v}" style="width:100%;">`;
-      return `<div class="card"><div class="k">${label}</div><div style="margin-top:6px;">${input}</div></div>`;
-    }).join('') + '</div>';
-  }
-  $('#cfg-form').innerHTML = html;
-  document.querySelectorAll('#cfg-form input, #cfg-form select').forEach(el=>{
-    el.style.background='var(--bg)'; el.style.color='var(--text)';
-    el.style.border='1px solid var(--border)'; el.style.borderRadius='6px'; el.style.padding='5px 8px';
-  });
-  $('#tz-sel').onchange = e=>{ localStorage.setItem('displayTz', e.target.value); };
-  $('#cfg-save').onclick = async ()=>{
-    const updates = {};
-    document.querySelectorAll('#cfg-form [data-k]').forEach(el=>{
-      const k = el.dataset.k;
-      const v = el.type==='checkbox' ? el.checked : el.value;
-      if (String(v) !== String(cfgLoaded[k])) updates[k] = v;
-    });
-    if (!Object.keys(updates).length){ $('#cfg-log').textContent='没有改动。'; return; }
-    if (updates.mode === 'live'){
-      const t = prompt('⚠️ 切换到 LIVE 实盘模式，之后所有订单都会真实发送！输入 LIVE 确认:');
-      if (t !== 'LIVE'){ $('#cfg-log').textContent='已取消 live 切换。'; return; }
-    }
-    if (!confirm('保存 '+Object.keys(updates).length+' 项改动？\n'+Object.keys(updates).join(', '))) return;
-    const r = await safeJ('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(updates)});
-    $('#cfg-log').textContent = r ? (r.ok?('✅ '+r.result):('❌ '+r.error)) : '❌ 请求失败';
-    loadConfig(); header_();
-  };
-  $('#cfg-restart').onclick = async ()=>{
-    if (!confirm('重启守护进程？(等待中的定时任务会重新计算, 不影响已挂订单)')) return;
-    const r = await safeJ('/api/action/restart_daemon', {method:'POST'});
-    $('#cfg-log').textContent = r ? (r.ok?('✅ '+r.result):('❌ '+r.error)) : '❌ 请求失败';
-  };
-}
+const STEP_TIPS = {
+  overnight_sells:'对所有未挂卖单的持仓，按 成本×(1+止盈%) 在 OVERNIGHT 场所挂限价卖单。正常由守护进程在 20:05 ET 自动执行；那一步失败时手动补。',
+  premarket_sells:'盘前时段（4:00-9:30 ET）挂 SMART 限价卖单（outsideRth）。正常 04:05 ET 自动执行。',
+  open_trail:'撤掉在途限价卖单，改挂 0.3% 追踪卖出。正常 09:31 ET 自动执行。',
+  confirm_fills:'拉取今天的买入成交，逐笔登记为 lot 并计算目标价。正常收盘后 16:10 自动执行。',
+  daily_report:'与 IB 实际持仓对账（回填已平仓 lot 的真实盈亏）、记录净值快照、推送日报。随时可点，无副作用。',
+  buy_flow:'完整跑一遍：闸门判定→选股→预算分配→提交 MOC 买单。仅在收盘前 15:50 ET 之前有意义（MOC 截止）。'};
 function mlog(s){ const el=$('#m-log'); el.textContent = new Date().toLocaleTimeString()+'  '+s+'\n'+el.textContent; }
 async function act(url, name){
-  mlog(name+' 执行中…');
+  mlog(name+' 执行中…'); toast(name+' 执行中…');
   try { const r = await j(url, {method:'POST'});
     mlog(name+': '+(r.ok?('✅ '+r.result):('❌ '+r.error)));
-  } catch(e){ mlog(name+': ❌ '+e); }
+    toast(name+': '+(r.ok?r.result:r.error), r.ok?'ok':'err');
+  } catch(e){ mlog(name+': ❌ '+e); toast(name+' 失败', 'err'); }
 }
 async function loadManual(){
-  const o = await j('/api/overview');
+  const o = await safeJ('/api/overview');
+  if (!o){ toast('后端不可用', 'err'); return; }
   $('#m-mode').textContent = 'mode: '+o.mode;
   $('#m-mode').className = 'pill '+(o.mode==='live'?'ok':'warn');
   $('#m-steps').innerHTML = Object.entries(STEPS).map(([k,v])=>
-    `<button class="btn" data-step="${k}">${v}</button>`).join('');
-  document.querySelectorAll('#m-steps .btn').forEach(b=>b.onclick=()=>{
-    if (confirm('手动执行「'+STEPS[b.dataset.step]+'」？')) act('/api/action/step/'+b.dataset.step, STEPS[b.dataset.step]);
+    `<button class="btn" data-step="${k}" data-tip="${STEP_TIPS[k]}">${v}</button>`).join('');
+  document.querySelectorAll('#m-steps .btn').forEach(b=>b.onclick=async ()=>{
+    const k = b.dataset.step;
+    if (await uiConfirm('手动执行「'+STEPS[k]+'」', STEP_TIPS[k])) act('/api/action/step/'+k, STEPS[k]);
   });
   const rows = o.open_lots;
   if (!rows.length){ $('#m-lots').innerHTML='<tr><td style="color:var(--muted)">无未平仓位</td></tr>'; }
@@ -358,26 +460,131 @@ async function loadManual(){
     $('#m-lots').innerHTML = '<tr><th>lot</th><th>代码</th><th>数量</th><th>成本</th><th>目标</th><th>状态</th><th>操作</th></tr>'+
       rows.map(r=>`<tr><td>${r.lot_id}</td><td>${r.symbol}</td><td>${r.qty}</td><td>${r.entry_price}</td>
         <td>${r.target_price}</td><td>${r.state}</td><td style="display:flex;gap:4px;">
-        <button class="btn" onclick="sellLot(${r.lot_id},'limit','${r.symbol}')">限价卖</button>
-        <button class="btn" onclick="sellLot(${r.lot_id},'trail','${r.symbol}')">追踪卖</button>
-        <button class="btn danger" onclick="sellLot(${r.lot_id},'market','${r.symbol}')">市价卖</button>
-        <button class="btn" onclick="setTarget(${r.lot_id},${r.target_price})">改目标</button></td></tr>`).join('');
+        <button class="btn" data-tip="按目标价挂限价卖单（先撤该票在途卖单）" onclick="sellLot(${r.lot_id},'limit','${r.symbol}')">限价卖</button>
+        <button class="btn" data-tip="挂 0.3% 追踪卖单：从最高点回落 0.3% 成交（先撤在途卖单）" onclick="sellLot(${r.lot_id},'trail','${r.symbol}')">追踪卖</button>
+        <button class="btn danger" data-tip="市价立即卖出，保证成交不保证价格。应急用" onclick="sellLot(${r.lot_id},'market','${r.symbol}')">市价卖</button>
+        <button class="btn" data-tip="修改该 lot 的止盈目标价，下次挂单时生效" onclick="setTarget(${r.lot_id},${r.target_price})">改目标</button></td></tr>`).join('');
   }
-  $('#m-cancel').onclick = ()=>{ if (confirm('撤销全部在途卖单？')) act('/api/action/cancel_all_sells','撤销全部卖单'); };
-  $('#m-flatten').onclick = ()=>{
-    const t = prompt('⚠️ 将对所有持仓提交市价卖出！输入 FLATTEN 确认:');
-    if (t==='FLATTEN') act('/api/action/flatten_all','一键清仓');
+  $('#m-cancel').onclick = async ()=>{
+    if (await uiConfirm('撤销全部在途卖单','持仓本身不动，只撤单。之后可重新手动挂单或等下一个自动步骤。', true))
+      act('/api/action/cancel_all_sells','撤销全部卖单');
+  };
+  $('#m-flatten').onclick = async ()=>{
+    if (await uiTyped('⚠️ 一键清仓','将撤销所有在途卖单，并对全部持仓提交市价卖出。市价单保证成交但不保证价格，建议仅在盘中流动性好时使用。','FLATTEN'))
+      act('/api/action/flatten_all','一键清仓');
   };
 }
-function sellLot(id, how, sym){
+async function sellLot(id, how, sym){
   const name = {limit:'限价卖',trail:'追踪卖',market:'市价卖'}[how]+' '+sym;
-  if (confirm(name+'（lot '+id+'）？会先撤该票在途卖单')) act('/api/action/sell_lot/'+id+'/'+how, name);
+  const tipMap = {limit:'按目标价挂限价卖单。', trail:'挂 0.3% 追踪卖出。', market:'市价立即卖出（应急）。'};
+  if (await uiConfirm(name+'（lot '+id+'）', tipMap[how]+' 会先撤该票在途卖单。', how==='market'))
+    act('/api/action/sell_lot/'+id+'/'+how, name);
 }
-function setTarget(id, cur){
-  const p = prompt('新目标价 (当前 '+cur+'):');
+async function setTarget(id, cur){
+  const p = await uiPrompt('修改目标价（lot '+id+'）', '当前目标价 '+cur+'。改动即写台账，下次挂单按新目标执行。', cur);
   if (p && !isNaN(parseFloat(p))) act('/api/action/set_target/'+id+'/'+parseFloat(p), '改目标价 lot '+id);
 }
-const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns, events:loadEvents, manual:loadManual, config:loadConfig};
+
+/* ---------- 配置 ---------- */
+const CFG_GROUPS = [
+  ['运行', [['mode','运行模式','dry＝演练：订单只记日志；live＝实盘真实下单。切 live 需输入确认词。建议 dry 跑顺 2~3 个交易日再切。']]],
+  ['环境闸门', [
+    ['gate.enabled','启用闸门','关闭后每晚无条件开仓（不建议：回测和实盘都显示无过滤时收益密度只有放行日的 1/2.6）。'],
+    ['gate.vix_min','VIX 阈值 (≥ 放行)','恐慌指数达到该值即放行。17＝折中（历史约 40~75% 晚上放行）；19＝保守（约 25~50%）；阈值 17→22 收益单调上升、放行减少。'],
+    ['gate.spy_max_pct','SPY 跌幅阈值 % (≤ 放行)','大盘当日跌幅达到该值即放行（与 VIX 是"或"关系）。-0.25 折中；-0.5 保守。大盘恐慌日抄底的历史成功率最高（跌超1.5%的日子 95% 隔夜脱身）。']]],
+  ['下单规则', [
+    ['budget.nightly_max_usd','每晚预算上限 $','单晚最多买入金额。实际预算还受杠杆上限约束，取两者较小值。'],
+    ['budget.gross_max_x_netliq','总持仓上限 (×净值)','总持仓成本不超过净值的倍数。1.0＝无杠杆；2.0＝两倍杠杆。超限当晚自动缩量或不买。'],
+    ['budget.min_available_funds_usd','可用资金下限 $','可用保证金低于此值当晚不开仓，防止逼近强平线。'],
+    ['budget.per_stock_max_pct','单股占预算上限 %','限制单只股票的集中度，防止单票暴雷伤害过大（历史最惨单夜 ERAS -55%）。'],
+    ['screener.n_stocks','每晚选股数','从跌幅榜选取的股票数（跳过前 N 名后取这么多只）。'],
+    ['screener.skip_rank','跳过跌幅榜前 N 名','跌得最狠的第一名往往有实质利空，默认跳过 1 个。'],
+    ['screener.lot_size','股数取整 (手)','买入股数向下取整到该倍数。'],
+    ['exits.overnight_target_pct','止盈目标 %','限价卖出目标＝成本×(1+此值%)。回测显示 1.5 与 2.0 差异在噪音内，1.5 周转最快。'],
+    ['exits.trail_pct','追踪回撤 %','开盘后追踪卖出的回撤触发比例。0.3％＝价格从高点回落 0.3% 即卖出。']]],
+  ['风控与通知', [
+    ['risk.cushion_alert_pct','保证金缓冲告警线 %','可用资金/净值低于该比例时，盘中每 2 小时推一次强平预警。'],
+    ['notify.heartbeat_minutes','心跳间隔 (分钟)','交易时段定时报平安的间隔；0＝关闭心跳（网关断线告警不受影响）。'],
+    ['notify.discord_webhook','Discord Webhook','所有播报与告警的接收地址。显示时打码；粘贴新地址可整体替换。']]],
+];
+let cfgLoaded = {};
+async function loadConfig(){
+  const d = await safeJ('/api/config');
+  if (!d){ $('#cfg-form').innerHTML = '<div class="card">配置接口不可用</div>'; return; }
+  cfgLoaded = d.fields;
+  let html = `<div class="card" style="margin-bottom:14px;" data-tip="只改变本浏览器里时间的显示方式（事件表、倒计时）。服务器调度始终按交易所时间，不受影响。"><div class="k">显示时区（仅影响本浏览器）</div>
+    <select id="tz-sel" style="margin-top:6px;">
+    ${Object.entries(TZS).map(([k,v])=>`<option value="${k}" ${getTz()===k?'selected':''}>${v}${k!=='local'?' ('+k+')':''}</option>`).join('')}
+    </select></div>`;
+  for (const [title, fields] of CFG_GROUPS){
+    html += `<h3>${title}</h3><div class="cards">` + fields.map(([key,label,tip])=>{
+      const v = cfgLoaded[key];
+      let input;
+      if (key==='mode') input = `<select data-k="${key}"><option value="dry" ${v==='dry'?'selected':''}>dry</option><option value="live" ${v==='live'?'selected':''}>live</option></select>`;
+      else if (key==='gate.enabled') input = `<input type="checkbox" data-k="${key}" ${v?'checked':''} style="width:18px;height:18px;">`;
+      else input = `<input data-k="${key}" value="${v==null?'':v}" style="width:100%;">`;
+      return `<div class="card" data-tip="${tip||''}"><div class="k">${label}</div><div style="margin-top:6px;">${input}</div></div>`;
+    }).join('') + '</div>';
+  }
+  $('#cfg-form').innerHTML = html;
+  document.querySelectorAll('#cfg-form input, #cfg-form select').forEach(el=>{
+    el.style.background='var(--bg)'; el.style.color='var(--text)';
+    el.style.border='1px solid var(--border)'; el.style.borderRadius='6px'; el.style.padding='5px 8px';
+  });
+  $('#tz-sel').onchange = e=>{ localStorage.setItem('displayTz', e.target.value); toast('显示时区已切换为 '+TZS[e.target.value], 'ok'); };
+  $('#cfg-save').onclick = async ()=>{
+    const updates = {};
+    document.querySelectorAll('#cfg-form [data-k]').forEach(el=>{
+      const k = el.dataset.k;
+      const v = el.type==='checkbox' ? el.checked : el.value;
+      if (String(v) !== String(cfgLoaded[k])) updates[k] = v;
+    });
+    if (!Object.keys(updates).length){ toast('没有改动'); return; }
+    if (updates.mode === 'live'){
+      const ok = await uiTyped('⚠️ 切换到 LIVE 实盘模式','切换后所有订单都会真实发送到交易所。请确认：① dry 演练已验证；② Gateway 已勾选 Bypass Order Precautions；③ 预算设置合理。','LIVE');
+      if (!ok){ toast('已取消 live 切换'); return; }
+    }
+    const ok = await uiConfirm('保存 '+Object.keys(updates).length+' 项改动', Object.keys(updates).join('\n'));
+    if (!ok) return;
+    const r = await safeJ('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(updates)});
+    $('#cfg-log').textContent = r ? (r.ok?('✅ '+r.result):('❌ '+r.error)) : '❌ 请求失败';
+    toast(r&&r.ok?'配置已保存':'保存失败', r&&r.ok?'ok':'err');
+    loadConfig(); header_();
+  };
+  $('#cfg-restart').onclick = async ()=>{
+    if (!await uiConfirm('重启守护进程','等待中的定时任务会重新计算；已挂在交易所的订单不受影响。')) return;
+    const r = await safeJ('/api/action/restart_daemon', {method:'POST'});
+    toast(r&&r.ok?'守护进程已重启':'重启失败', r&&r.ok?'ok':'err');
+  };
+}
+
+/* ---------- 新手引导 ---------- */
+const TOUR = [
+  ['nav button[data-s="overview"]','总览页：账户四大数字、当前持仓与浮盈、净值曲线、今日自动动作时刻表。每天扫一眼这里就够了。'],
+  ['#gatepill','闸门状态实时显示在顶栏：绿色=今晚会开仓，黄色=今晚拦截。鼠标停留任何元素都有详细说明。'],
+  ['#pauseBtn','紧急暂停开仓在这里：停买入、不停卖出。'],
+  ['nav button[data-s="lots"]','交易台账：系统的每一笔买卖、盈亏、以及"影子出场实验"——用你自己的实盘对比三种出场规则。'],
+  ['nav button[data-s="runs"]','每晚决策：闸门为什么放行/拦截，VIX 和 SPY 的数值都在这里，方便你复盘。'],
+  ['nav button[data-s="manual"]','手动操作：自动化出问题时的兜底。它不依赖守护进程，永远可用。'],
+  ['nav button[data-s="config"]','配置：闸门阈值、预算、杠杆、止盈比例都可以改，改动即时生效并留痕。dry/live 也在这里切换。'],
+  ['nav button[data-s="help"]','帮助页随时回来看：流程时间线、状态含义、常见问题都在这里。祝交易顺利！'],
+];
+$('#tour-btn').onclick = async ()=>{
+  for (let i=0; i<TOUR.length; i++){
+    const [sel, text] = TOUR[i];
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    el.classList.add('tour-hl'); el.scrollIntoView({block:'nearest'});
+    const ok = await modal({title:`新手引导 (${i+1}/${TOUR.length})`, body:text,
+      okText: i<TOUR.length-1?'下一步 →':'完成', cancelText:'跳过引导'});
+    el.classList.remove('tour-hl');
+    if (!ok) break;
+  }
+};
+
+/* ---------- 路由 ---------- */
+const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns,
+                 events:loadEvents, manual:loadManual, config:loadConfig, help:()=>{}};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));
@@ -385,7 +592,11 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   loaders[b.dataset.s]();
 });
 loadOverview();
-setInterval(()=>{ const cur=document.querySelector('nav button.active').dataset.s; loaders[cur](); }, 60000);
+if (!localStorage.getItem('tourDone')){
+  localStorage.setItem('tourDone','1');
+  setTimeout(()=>{ modal({title:'欢迎使用 ib-trading 面板', body:'第一次使用？建议先花一分钟跟着新手引导过一遍（也可以稍后在「帮助」页启动）。', okText:'开始引导', cancelText:'稍后再说'}).then(ok=>{ if(ok) $('#tour-btn').click(); }); }, 800);
+}
+setInterval(()=>{ const cur=document.querySelector('nav button.active').dataset.s; if (cur!=='help'&&cur!=='config'&&cur!=='manual') loaders[cur](); }, 60000);
 </script>
 </body>
 </html>
