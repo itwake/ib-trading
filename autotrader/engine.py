@@ -253,6 +253,12 @@ class Engine:
         self.notify.send(f"autotrader 启动 (mode={self.cfg['mode']})")
         asyncio.create_task(self.heartbeat_loop())
         while True:
+            try:  # 热加载配置 (面板改动即生效; 原地更新保持引用)
+                from common import load_config
+                self.cfg.clear()
+                self.cfg.update(load_config())
+            except Exception as e:
+                log.warning("配置热加载失败: %s", e)
             today = now_et().date()
             if cal.is_trading_day(today) and now_et() < cal.market_close_et(today) + timedelta(minutes=30):
                 d = today

@@ -32,8 +32,11 @@ def probe_handshake(host, port, timeout=15) -> bool:
 class Broker:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.dry = cfg["mode"] == "dry"
         self.ib = IB()
+
+    @property
+    def dry(self):
+        return self.cfg["mode"] == "dry"
 
     async def connect(self, retries=3):
         c = self.cfg["ib"]

@@ -95,7 +95,8 @@ def index():
 def overview():
     today = now_et().date()
     target = today if cal.is_trading_day(today) else cal.next_trading_day(today)
-    schedule = [{"name": n, "ts": ts.strftime("%m-%d %H:%M ET")} for n, ts in cal.todays_schedule(cfg, target)]
+    schedule = [{"name": n, "ts": ts.strftime("%m-%d %H:%M ET"), "iso": ts.isoformat()}
+                for n, ts in cal.todays_schedule(cfg, target)]
     snap = q("SELECT * FROM snapshots ORDER BY date DESC LIMIT 1")
     run = q("SELECT * FROM nightly_runs ORDER BY date DESC LIMIT 1")
     open_lots = q("SELECT * FROM lots WHERE state NOT IN ('CLOSED','ERROR') ORDER BY lot_id DESC")
@@ -211,6 +212,111 @@ def set_pause(value: int):
     conn.commit()
     conn.close()
     return {"pause_buys": value}
+
+
+# ================= 配置管理 =================
+EDITABLE = {
+    "mode": ("enum", ["dry", "live"]),
+    "gate.enabled": ("bool",),
+    "gate.vix_min": ("num", 0, 100),
+    "gate.spy_max_pct": ("num", -10, 0),
+    "screener.n_stocks": ("int", 1, 20),
+    "screener.skip_rank": ("int", 0, 10),
+    "screener.lot_size": ("int", 1, 100),
+    "budget.nightly_max_usd": ("num", 0, 1000000),
+    "budget.gross_max_x_netliq": ("num", 0, 4),
+    "budget.min_available_funds_usd": ("num", 0, 1000000),
+    "budget.per_stock_max_pct": ("num", 1, 100),
+    "exits.overnight_target_pct": ("num", 0.1, 10),
+    "exits.trail_pct": ("num", 0.05, 5),
+    "risk.cushion_alert_pct": ("num", 1, 50),
+    "notify.heartbeat_minutes": ("int", 0, 1440),
+    "notify.discord_webhook": ("str",),
+}
+
+
+def _coerce(spec, v):
+    kind = spec[0]
+    if kind == "bool":
+        return bool(v) if isinstance(v, bool) else str(v).lower() in ("1", "true", "on")
+    if kind == "enum":
+        if v not in spec[1]:
+            raise ValueError(f"必须是 {spec[1]}")
+        return v
+    if kind == "str":
+        return str(v)
+    x = float(v)
+    if not (spec[1] <= x <= spec[2]):
+        raise ValueError(f"范围 {spec[1]}~{spec[2]}")
+    return int(x) if kind == "int" else x
+
+
+@app.get("/api/config")
+def get_config():
+    import json as _json
+    with open(os.path.join(HERE, "..", "autotrader", "config.json"), encoding="utf-8") as f:
+        raw = _json.load(f)
+    out = {}
+    for path in EDITABLE:
+        node = raw
+        for k in path.split("."):
+            node = node.get(k, None) if isinstance(node, dict) else None
+        out[path] = node
+    if out.get("notify.discord_webhook"):
+        out["notify.discord_webhook"] = out["notify.discord_webhook"][:45] + "…(已设置)"
+    return {"fields": out}
+
+
+@app.post("/api/config")
+async def set_config(updates: dict):
+    import json as _json
+    path_cfg = os.path.join(HERE, "..", "autotrader", "config.json")
+    with open(path_cfg, encoding="utf-8") as f:
+        raw = _json.load(f)
+    changed = []
+    for path, val in updates.items():
+        if path not in EDITABLE:
+            return {"ok": False, "error": f"不可配置项: {path}"}
+        if path == "notify.discord_webhook" and "…" in str(val):
+            continue  # 掩码值, 未修改
+        try:
+            val = _coerce(EDITABLE[path], val)
+        except Exception as e:
+            return {"ok": False, "error": f"{path}: {e}"}
+        node = raw
+        keys = path.split(".")
+        for k in keys[:-1]:
+            node = node.setdefault(k, {})
+        if node.get(keys[-1]) != val:
+            node[keys[-1]] = val
+            changed.append(f"{path}={val if 'webhook' not in path else '(已更新)'}")
+    if not changed:
+        return {"ok": True, "result": "无变更"}
+    with open(path_cfg, "w", encoding="utf-8") as f:
+        _json.dump(raw, f, ensure_ascii=False, indent=2)
+    cfg.clear()
+    cfg.update(load_config())
+    conn = sqlite3.connect(cfg["db_path"])
+    conn.execute("INSERT INTO events VALUES (?,?,?)",
+                 (datetime.now().isoformat(), "config", "; ".join(changed)))
+    conn.commit()
+    conn.close()
+    try:
+        from notify import Notifier
+        Notifier(cfg).send("[配置] 修改: " + "; ".join(changed), "warn")
+    except Exception:
+        pass
+    return {"ok": True, "result": "已保存: " + "; ".join(changed) + "。守护进程将在下一循环生效，或点「重启守护进程」立即生效。"}
+
+
+@app.post("/api/action/restart_daemon")
+async def restart_daemon():
+    import subprocess
+    try:
+        subprocess.run(["systemctl", "restart", "autotrader"], check=True, timeout=30)
+        return {"ok": True, "result": "守护进程已重启"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ================= 手动操作 (独立于守护进程, clientId+2 直连 IB) =================

@@ -62,6 +62,7 @@
   <button data-s="runs">每晚决策</button>
   <button data-s="events">事件日志</button>
   <button data-s="manual" style="color:var(--amber)">手动操作</button>
+  <button data-s="config">配置</button>
 </nav>
 <main>
   <section id="overview" class="section active">
@@ -117,6 +118,14 @@
     </div>
     <h3>操作结果</h3>
     <div class="card"><pre id="m-log" style="margin:0; font-size:12px; white-space:pre-wrap; max-height:200px; overflow:auto;">—</pre></div>
+  </section>
+  <section id="config" class="section">
+    <div id="cfg-form"></div>
+    <div class="filters" style="margin-top:16px;">
+      <button class="btn safe" id="cfg-save">保存配置</button>
+      <button class="btn" id="cfg-restart">重启守护进程（立即生效）</button>
+    </div>
+    <div class="card" style="margin-top:12px;"><pre id="cfg-log" style="margin:0; font-size:12px; white-space:pre-wrap;">修改会写入 config.json、记录事件并推送 Discord。守护进程每个循环自动热加载，或点重启立即生效。</pre></div>
   </section>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -195,14 +204,11 @@ async function loadOverview(){
     [['symbol','代码'],['qty','数量'],['entry_price','成本'],['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]:
     [['symbol','代码'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态']]);
   $('#ov-day').textContent = '('+o.target_day+')';
-  table($('#ov-sched'), o.schedule, [['ts','时间 (ET)'],['name','动作']]);
-  if (o.schedule.length){
-    const now = new Date(o.now_et.replace(' ET','').replace(' ','T'));
-    for (const ev of o.schedule){
-      const [md, hm] = ev.ts.replace(' ET','').split(' ');
-      const when = new Date(now.getFullYear()+'-'+md.replace('-','-')+'T'+hm+':00');
-      if (when > now){ nextEvent = {name:ev.name, when}; break; }
-    }
+  const sched = o.schedule.map(ev=>({name:ev.name, 显示:ev.iso?fmtTs(ev.iso):ev.ts}));
+  table($('#ov-sched'), sched, [['显示','时间'],['name','动作']]);
+  nextEvent = null;
+  for (const ev of o.schedule){
+    if (ev.iso && new Date(ev.iso) > new Date()){ nextEvent = {name:ev.name, when:new Date(ev.iso)}; break; }
   }
   if (snaps && snaps.length){
     chart('eq-chart', {type:'line', data:{labels:snaps.map(x=>x.date),
@@ -264,6 +270,72 @@ async function loadEvents(){ table($('#t-events'), await j('/api/events'), [['ts
 
 const STEPS = {overnight_sells:'挂隔夜卖单', premarket_sells:'挂盘前卖单', open_trail:'改挂追踪单',
   confirm_fills:'成交确认', daily_report:'对账+日报', buy_flow:'闸门+买入流程'};
+const TZS = {'America/New_York':'美东', 'Asia/Shanghai':'北京', 'local':'本地'};
+const getTz = () => localStorage.getItem('displayTz') || 'America/New_York';
+function fmtTs(iso){
+  const tz = getTz();
+  const opt = {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false};
+  if (tz !== 'local') opt.timeZone = tz;
+  return new Date(iso).toLocaleString('zh-CN', opt) + ' ' + (TZS[tz]||'');
+}
+const CFG_GROUPS = [
+  ['运行', [['mode','运行模式 (dry=演练 / live=实盘)']]],
+  ['环境闸门', [['gate.enabled','启用闸门'], ['gate.vix_min','VIX 阈值 (≥ 放行)'], ['gate.spy_max_pct','SPY 当日跌幅阈值 % (≤ 放行)']]],
+  ['下单规则', [['budget.nightly_max_usd','每晚预算上限 $'], ['budget.gross_max_x_netliq','总持仓上限 (×净值)'],
+    ['budget.min_available_funds_usd','可用资金下限 $ (低于不开仓)'], ['budget.per_stock_max_pct','单股占预算上限 %'],
+    ['screener.n_stocks','每晚选股数'], ['screener.skip_rank','跳过跌幅榜前 N 名'], ['screener.lot_size','股数取整 (手)'],
+    ['exits.overnight_target_pct','止盈目标 %'], ['exits.trail_pct','追踪回撤 %']]],
+  ['风控与通知', [['risk.cushion_alert_pct','保证金缓冲告警线 %'], ['notify.heartbeat_minutes','心跳间隔 (分钟, 0=关)'],
+    ['notify.discord_webhook','Discord Webhook']]],
+];
+let cfgLoaded = {};
+async function loadConfig(){
+  const d = await safeJ('/api/config');
+  if (!d){ $('#cfg-form').innerHTML = '<div class="card">配置接口不可用</div>'; return; }
+  cfgLoaded = d.fields;
+  let html = `<div class="card" style="margin-bottom:14px;"><div class="k">显示时区（仅影响本浏览器）</div>
+    <select id="tz-sel" style="margin-top:6px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px;">
+    ${Object.entries(TZS).map(([k,v])=>`<option value="${k}" ${getTz()===k?'selected':''}>${v}${k!=='local'?' ('+k+')':''}</option>`).join('')}
+    </select></div>`;
+  for (const [title, fields] of CFG_GROUPS){
+    html += `<h3>${title}</h3><div class="cards">` + fields.map(([key,label])=>{
+      const v = cfgLoaded[key];
+      let input;
+      if (key==='mode') input = `<select data-k="${key}"><option value="dry" ${v==='dry'?'selected':''}>dry</option><option value="live" ${v==='live'?'selected':''}>live</option></select>`;
+      else if (key==='gate.enabled') input = `<input type="checkbox" data-k="${key}" ${v?'checked':''} style="width:18px;height:18px;">`;
+      else input = `<input data-k="${key}" value="${v==null?'':v}" style="width:100%;">`;
+      return `<div class="card"><div class="k">${label}</div><div style="margin-top:6px;">${input}</div></div>`;
+    }).join('') + '</div>';
+  }
+  $('#cfg-form').innerHTML = html;
+  document.querySelectorAll('#cfg-form input, #cfg-form select').forEach(el=>{
+    el.style.background='var(--bg)'; el.style.color='var(--text)';
+    el.style.border='1px solid var(--border)'; el.style.borderRadius='6px'; el.style.padding='5px 8px';
+  });
+  $('#tz-sel').onchange = e=>{ localStorage.setItem('displayTz', e.target.value); };
+  $('#cfg-save').onclick = async ()=>{
+    const updates = {};
+    document.querySelectorAll('#cfg-form [data-k]').forEach(el=>{
+      const k = el.dataset.k;
+      const v = el.type==='checkbox' ? el.checked : el.value;
+      if (String(v) !== String(cfgLoaded[k])) updates[k] = v;
+    });
+    if (!Object.keys(updates).length){ $('#cfg-log').textContent='没有改动。'; return; }
+    if (updates.mode === 'live'){
+      const t = prompt('⚠️ 切换到 LIVE 实盘模式，之后所有订单都会真实发送！输入 LIVE 确认:');
+      if (t !== 'LIVE'){ $('#cfg-log').textContent='已取消 live 切换。'; return; }
+    }
+    if (!confirm('保存 '+Object.keys(updates).length+' 项改动？\n'+Object.keys(updates).join(', '))) return;
+    const r = await safeJ('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(updates)});
+    $('#cfg-log').textContent = r ? (r.ok?('✅ '+r.result):('❌ '+r.error)) : '❌ 请求失败';
+    loadConfig(); header_();
+  };
+  $('#cfg-restart').onclick = async ()=>{
+    if (!confirm('重启守护进程？(等待中的定时任务会重新计算, 不影响已挂订单)')) return;
+    const r = await safeJ('/api/action/restart_daemon', {method:'POST'});
+    $('#cfg-log').textContent = r ? (r.ok?('✅ '+r.result):('❌ '+r.error)) : '❌ 请求失败';
+  };
+}
 function mlog(s){ const el=$('#m-log'); el.textContent = new Date().toLocaleTimeString()+'  '+s+'\n'+el.textContent; }
 async function act(url, name){
   mlog(name+' 执行中…');
@@ -305,7 +377,7 @@ function setTarget(id, cur){
   const p = prompt('新目标价 (当前 '+cur+'):');
   if (p && !isNaN(parseFloat(p))) act('/api/action/set_target/'+id+'/'+parseFloat(p), '改目标价 lot '+id);
 }
-const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns, events:loadEvents, manual:loadManual};
+const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns, events:loadEvents, manual:loadManual, config:loadConfig};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));

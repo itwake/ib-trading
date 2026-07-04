@@ -9,7 +9,11 @@ log = logging.getLogger("notify")
 
 class Notifier:
     def __init__(self, cfg):
-        self.url = cfg["notify"].get("discord_webhook", "")
+        self.cfg = cfg
+
+    @property
+    def url(self):
+        return self.cfg["notify"].get("discord_webhook", "")
 
     def send(self, msg: str, level: str = "info"):
         prefix = {"info": "", "warn": "⚠️ ", "critical": "🚨 "}.get(level, "")
