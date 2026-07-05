@@ -526,6 +526,94 @@ async def action_flatten():
     return await _run_manual("一键清仓 (全部市价卖出)", run)
 
 
+EV_ACT = {"gate_check": "闸门判定", "build_plan": "选股与预算", "submit_moc": "提交 MOC 买单",
+          "confirm_fills": "成交入台账", "overnight_sells": "挂隔夜限价卖单",
+          "premarket_sells": "挂盘前限价卖单", "open_trail": "改挂追踪卖单", "daily_report": "对账与日报"}
+ORDER_ACT = {"MOC_BUY": "提交 MOC 买单", "OVERNIGHT_SELL": "挂隔夜限价卖单",
+             "PREMARKET_SELL": "挂盘前限价卖单", "TRAIL_SELL": "挂追踪卖单"}
+
+
+@app.get("/api/timeline")
+def timeline(limit: int = 400):
+    """事件列表: 逐条粒度。future=可预知的每一步(单票一行), past=已发生的每张单/每笔成交。"""
+    now = now_et()
+    today = now.date()
+    target = today if cal.is_trading_day(today) else cal.next_trading_day(today)
+    open_lots = q("SELECT * FROM lots WHERE state NOT IN ('CLOSED','ERROR') ORDER BY lot_id")
+    limit_lots = [l for l in open_lots if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]
+    snap = q("SELECT * FROM snapshots ORDER BY date DESC LIMIT 1")
+    g, sc, b, ex = cfg["gate"], cfg["screener"], cfg["budget"], cfg["exits"]
+    est = None
+    if snap and snap[0].get("netliq"):
+        est = min(b["nightly_max_usd"], max(0.0, b["gross_max_x_netliq"] * snap[0]["netliq"] - snap[0]["gross"]))
+
+    future = []
+    for name, ts in cal.todays_schedule(cfg, target):
+        if ts.astimezone(now.tzinfo) <= now:
+            continue
+        iso = ts.isoformat()
+        act = EV_ACT.get(name, name)
+        if name in ("overnight_sells", "premarket_sells"):
+            venue = "隔夜 OVERNIGHT" if name == "overnight_sells" else "盘前 outsideRth"
+            if limit_lots:
+                for l in limit_lots:
+                    future.append(dict(iso=iso, act=act, symbol=l["symbol"], qty=l["qty"],
+                                       price=f"≥{l['target_price']}",
+                                       note=f"{venue}; 市价更高则跟随抬价; 挂单前防超卖清点"))
+            else:
+                future.append(dict(iso=iso, act=act, symbol="—", qty=None, price=None,
+                                   note="当前无待挂仓位; 今晚若有新买入将逐票挂单"))
+        elif name == "open_trail":
+            if limit_lots:
+                for l in limit_lots:
+                    future.append(dict(iso=iso, act=act, symbol=l["symbol"], qty=l["qty"],
+                                       price=f"{ex['trail_pct']}% 追踪",
+                                       note="先撤系统限价单; 从高点回落即市价成交"))
+            else:
+                future.append(dict(iso=iso, act=act, symbol="—", qty=None, price=None, note="当前无待挂仓位"))
+        elif name == "gate_check":
+            future.append(dict(iso=iso, act=act, symbol="市场", qty=None, price=None,
+                               note=f"VIX≥{g['vix_min']} 或 SPY≤{g['spy_max_pct']}% 即放行, 否则今晚不买"))
+        elif name == "build_plan":
+            note = f"Finviz 跌幅榜第 {sc['skip_rank'] + 1}~{sc['skip_rank'] + sc['n_stocks']} 名"
+            if est is not None:
+                note += f"; 预算估算 ${est:,.0f}"
+            future.append(dict(iso=iso, act=act, symbol="待选股", qty=sc["n_stocks"], price=None, note=note))
+        elif name == "submit_moc":
+            per = f"每只 ≈ ${est / sc['n_stocks']:,.0f}" if est else f"每只 ≈ 预算/{sc['n_stocks']}"
+            future.append(dict(iso=iso, act=act, symbol="待选股", qty=sc["n_stocks"],
+                               price="收盘竞价", note=f"{per}; 具体标的 15:38 选股后可知"))
+        else:
+            future.append(dict(iso=iso, act=act, symbol="—", qty=None, price=None,
+                               note="对账/入账/日报" if name != "confirm_fills" else f"逐笔登记, 目标=成交价×{1 + ex['overnight_target_pct'] / 100:.3f}"))
+
+    past = []
+    for o in q("SELECT * FROM orders ORDER BY placed_at DESC LIMIT ?", (limit,)):
+        past.append(dict(iso=o["placed_at"], act=ORDER_ACT.get(o["kind"], o["kind"]),
+                         symbol=o["symbol"], qty=o["qty"],
+                         price=(o["note"] if o["kind"] == "TRAIL_SELL" else (o["limit_price"] or "市价")),
+                         status="done", note=o["note"] if o["kind"] != "TRAIL_SELL" else ""))
+    for l in q("SELECT * FROM lots ORDER BY lot_id DESC LIMIT 200"):
+        past.append(dict(iso=l["created_at"], act="买入成交", symbol=l["symbol"], qty=l["qty"],
+                         price=round(l["entry_price"], 2), status="done",
+                         note=f"目标价 {l['target_price']}"))
+        if l["state"] == "CLOSED" and (l["exit_price"] or 0) > 0:
+            pct = (l["exit_price"] / l["entry_price"] - 1) * 100
+            past.append(dict(iso=f"{l['exit_date']}T23:59:00", act="卖出成交", symbol=l["symbol"],
+                             qty=l["qty"], price=l["exit_price"],
+                             status="done", note=f"{pct:+.2f}%, ${l['pnl']:+,.0f} ({l['exit_how']})"))
+    for e in q("SELECT * FROM executions ORDER BY id DESC LIMIT 200"):
+        if e["step"] in ("gate_check", "daily_report", "build_plan") or e["status"] != "ok":
+            st = "done" if e["status"] == "ok" else ("skipped" if e["status"] == "skipped" else "error")
+            first = (e["detail"] or "").split("\n")[0][:160]
+            if e["step"] == "gate_check":
+                st = "gate_pass" if "放行" in first else ("gate_block" if "拦截" in first or "暂停" in first else st)
+            past.append(dict(iso=e["started_at"], act=EV_ACT.get(e["step"], e["step"]), symbol="—",
+                             qty=None, price=None, status=st, note=first))
+    past.sort(key=lambda r: str(r["iso"]), reverse=True)
+    return {"future": future, "past": past[:limit], "target_day": str(target)}
+
+
 @app.get("/api/executions")
 def executions(limit: int = 300):
     rows = q("SELECT * FROM executions ORDER BY id DESC LIMIT ?", (limit,))

@@ -142,8 +142,11 @@ class Engine:
                 self.notify.send(
                     f"跳过追踪 {lot['symbol']}: 持仓 {pos}, 在途卖单 {pending}(含手动) — 防超卖", "warn")
                 continue
-            await self.broker.sell_trail(lot["symbol"], qty, self.cfg["exits"]["trail_pct"])
+            t = await self.broker.sell_trail(lot["symbol"], qty, self.cfg["exits"]["trail_pct"])
             self.db.set_lot_state(lot["lot_id"], "TRAILING")
+            self.db.record_order(getattr(getattr(t, "order", None), "orderId", -1) if t else -1,
+                                 lot["lot_id"], "TRAIL_SELL", lot["symbol"], qty, 0,
+                                 "submitted", f"trail {self.cfg['exits']['trail_pct']}%")
             lines.append(f"{lot['symbol']} x{qty}" + (f" (缩量)" if qty < lot["qty"] else ""))
         if lines:
             self.notify.send(f"开盘追踪卖出已挂 ({self.cfg['exits']['trail_pct']}%):\n" + "\n".join(lines))
