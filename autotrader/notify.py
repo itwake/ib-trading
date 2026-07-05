@@ -10,6 +10,7 @@ log = logging.getLogger("notify")
 class Notifier:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.buffer = None  # 设为 list 时, 同步收集消息文本 (供执行流水记录)
 
     @property
     def url(self):
@@ -19,6 +20,8 @@ class Notifier:
         prefix = {"info": "", "warn": "⚠️ ", "critical": "🚨 "}.get(level, "")
         text = f"{prefix}{msg}"
         log.info("[notify] %s", text)
+        if self.buffer is not None:
+            self.buffer.append(text)
         if not self.url:
             return
         try:

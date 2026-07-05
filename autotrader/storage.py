@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS processed_execs (
 CREATE TABLE IF NOT EXISTS control (
   key TEXT PRIMARY KEY, value TEXT, updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS executions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date TEXT, step TEXT, status TEXT, detail TEXT,
+  started_at TEXT, finished_at TEXT
+);
 """
 
 
@@ -100,6 +105,14 @@ class DB:
             "INSERT OR REPLACE INTO nightly_runs VALUES (?,?,?,?,?,?,?)",
             (date, int(gate_pass), vix, spy_pct, n_planned, budget, note),
         )
+        self.conn.commit()
+
+    def record_exec(self, run_date, step, status, detail, started_at):
+        self.conn.execute(
+            "INSERT INTO executions (run_date, step, status, detail, started_at, finished_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (str(run_date), step, status, detail, started_at,
+             datetime.now().isoformat(timespec="seconds")))
         self.conn.commit()
 
     def get_control(self, key, default=""):

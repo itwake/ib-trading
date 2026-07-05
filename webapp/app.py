@@ -526,6 +526,17 @@ async def action_flatten():
     return await _run_manual("一键清仓 (全部市价卖出)", run)
 
 
+@app.get("/api/executions")
+def executions(limit: int = 300):
+    rows = q("SELECT * FROM executions ORDER BY id DESC LIMIT ?", (limit,))
+    for r in rows:
+        try:
+            r["iso"] = datetime.fromisoformat(r["started_at"]).isoformat()
+        except Exception:
+            r["iso"] = None
+    return rows
+
+
 @app.get("/api/gate/history")
 def gate_history(days: int = 180):
     """VIX 与 SPY 日涨跌的历史序列 + 闸门阈值, 供决策页图表。"""

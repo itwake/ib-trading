@@ -220,6 +220,9 @@ class Engine:
             if wait > 0:
                 log.info("等待 %s @ %s (%.0f 分钟)", name, ts.strftime("%H:%M ET"), wait / 60)
                 await asyncio.sleep(wait)
+            t0 = now_et().isoformat(timespec="seconds")
+            self.notify.buffer = []
+            status = "ok"
             try:
                 await self.broker.connect()
                 if name == "gate_check":
@@ -227,6 +230,8 @@ class Engine:
                 elif name in ("build_plan", "submit_moc"):
                     if gate_passed is False:
                         log.info("闸门拦截, 跳过 %s", name)
+                        status = "skipped"
+                        self.notify.buffer.append("闸门拦截/暂停/无计划, 未执行")
                     else:
                         ok = await getattr(self, self.ACTIONS[name])(d)
                         if name == "build_plan" and ok is False:
@@ -235,8 +240,15 @@ class Engine:
                     await getattr(self, self.ACTIONS[name])(d)
             except Exception as e:
                 log.exception("%s 失败", name)
+                status = f"error: {e}"
                 self.notify.send(f"[{d}] 步骤 {name} 失败: {e}", "critical")
             finally:
+                detail = "\n".join(self.notify.buffer or []) or "(无输出)"
+                self.notify.buffer = None
+                try:
+                    self.db.record_exec(d, name, status, detail, t0)
+                except Exception:
+                    log.exception("执行流水写入失败")
                 self.broker.disconnect()
 
     async def heartbeat_loop(self):

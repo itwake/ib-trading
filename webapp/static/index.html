@@ -81,6 +81,7 @@
 <div id="banner" style="display:none; background:#2a2410; color:var(--amber); padding:6px 24px; font-size:13px; border-bottom:1px solid var(--border);"></div>
 <nav>
   <button data-s="overview" class="active" data-tip="账户概况、持仓浮盈、净值曲线、今日自动动作时刻表">总览</button>
+  <button data-s="exec" data-tip="执行记录：接下来每一步的精确计划（对谁、什么价、下什么单）+ 守护进程逐条执行流水（成功/跳过/失败及完整输出）">执行记录</button>
   <button data-s="lots" data-tip="系统经手的每一笔 lot（一笔买入=一个 lot）：入场、目标、出场、盈亏，以及三种出场规则的影子对比实验">交易台账</button>
   <button data-s="history" data-tip="上线前一整年的真实成交审计（1298 笔），按策略类型分账，作为策略基准">全年历史</button>
   <button data-s="runs" data-tip="每晚闸门的判定记录：VIX/SPY 数值、放行/拦截、计划买入数与预算">每晚决策</button>
@@ -105,6 +106,12 @@
         <div class="scroll" style="max-height:220px"><table id="ov-sched"></table></div>
       </div>
     </div>
+  </section>
+  <section id="exec" class="section">
+    <h3 data-tip="按当前持仓/配置/最新净值实时生成：到点会对哪些票、以什么价、下什么单。持仓或配置变化后自动更新。">接下来的计划 ⓘ <span id="ex-day" style="color:var(--muted)"></span></h3>
+    <div class="scroll" style="max-height:340px"><table id="ex-plan"></table></div>
+    <h3 data-tip="守护进程每执行一个步骤记一条：✅成功 ⏭跳过(闸门拦截等) ❌失败。明细与 Discord 播报同文，可追溯每一次挂单的票、数量、价格。">历史执行流水 ⓘ</h3>
+    <div class="scroll" style="max-height:520px"><table id="ex-hist"></table></div>
   </section>
   <section id="lots" class="section">
     <div class="cards" id="l-cards"></div>
@@ -295,6 +302,9 @@ function toast(msg, type=''){
 
 /* ---------- 时区 ---------- */
 const TZS = {'America/New_York':'美东', 'Asia/Shanghai':'北京', 'local':'本地'};
+const EVNAMES = {gate_check:'闸门判定', build_plan:'选股与预算', submit_moc:'提交 MOC 买单',
+  confirm_fills:'成交入台账', overnight_sells:'挂隔夜限价卖单', premarket_sells:'挂盘前限价卖单',
+  open_trail:'改挂追踪卖单', daily_report:'对账与日报'};
 const getTz = () => localStorage.getItem('displayTz') || 'America/New_York';
 function fmtTs(iso){
   const tz = getTz();
@@ -374,14 +384,9 @@ async function loadOverview(){
   table($('#ov-lots'), qt&&qt.quotes?qt.quotes:o.open_lots, qt&&qt.quotes?
     [['symbol','代码'],['qty','数量'],['entry_price','成本'],['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]:
     [['symbol','代码'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态','', '状态含义见「帮助」页：FILLED已买入→OVERNIGHT隔夜卖单→PREMARKET盘前→TRAILING追踪→CLOSED已平']]);
-  $('#ov-day').textContent = '('+o.target_day+')';
-  const EVNAMES = {gate_check:'闸门判定', build_plan:'选股与预算', submit_moc:'提交 MOC 买单',
-    confirm_fills:'成交入台账', overnight_sells:'挂隔夜限价卖单', premarket_sells:'挂盘前限价卖单',
-    open_trail:'改挂追踪卖单', daily_report:'对账与日报'};
-  $('#ov-sched').innerHTML = '<tr><th>时间</th><th>动作与明细</th></tr>' + o.schedule.map(ev=>
-    `<tr><td style="vertical-align:top;">${ev.iso?fmtTs(ev.iso):ev.ts}</td>
-     <td style="white-space:normal;"><div style="font-weight:500;">${EVNAMES[ev.name]||ev.name}</div>
-     ${ev.detail?`<div style="font-size:12px;color:var(--muted);line-height:1.6;">${ev.detail}</div>`:''}</td></tr>`).join('');
+  $('#ov-day').textContent = '('+o.target_day+') 明细见「执行记录」页';
+  $('#ov-sched').innerHTML = '<tr><th>时间</th><th>动作</th></tr>' + o.schedule.map(ev=>
+    `<tr><td>${ev.iso?fmtTs(ev.iso):ev.ts}</td><td>${EVNAMES[ev.name]||ev.name}</td></tr>`).join('');
   nextEvent = null;
   for (const ev of o.schedule){
     if (ev.iso && new Date(ev.iso) > new Date()){ nextEvent = {name:ev.name, when:new Date(ev.iso)}; break; }
@@ -392,6 +397,31 @@ async function loadOverview(){
       options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
         scales:{x:{ticks:{color:'#8b95a3'}, grid:{display:false}},
                 y:{ticks:{color:'#8b95a3', callback:v=>'$'+(v/1000)+'k'}, grid:{color:'#2a323d'}}}}});
+  }
+}
+
+/* ---------- 执行记录 ---------- */
+async function loadExec(){
+  const [o, ex] = await Promise.all([safeJ('/api/overview'), safeJ('/api/executions')]);
+  if (o){
+    $('#ex-day').textContent = '（交易日 '+o.target_day+'）';
+    $('#ex-plan').innerHTML = '<tr><th style="width:140px;">时间</th><th style="width:150px;">动作</th><th>明细</th></tr>' +
+      o.schedule.map(ev=>`<tr>
+        <td style="vertical-align:top;">${ev.iso?fmtTs(ev.iso):ev.ts}</td>
+        <td style="vertical-align:top; font-weight:500;">${EVNAMES[ev.name]||ev.name}</td>
+        <td style="white-space:normal; font-size:12.5px; color:var(--muted); line-height:1.7;">${ev.detail||'—'}</td></tr>`).join('');
+  } else { $('#ex-plan').innerHTML = '<tr><td style="color:var(--muted)">后端不可用</td></tr>'; }
+  if (ex && ex.length){
+    const badge = s => s==='ok' ? '✅' : (s==='skipped' ? '⏭' : '❌');
+    $('#ex-hist').innerHTML = '<tr><th style="width:150px;">执行时间</th><th style="width:100px;">交易日</th><th style="width:150px;">动作</th><th style="width:60px;">状态</th><th>明细</th></tr>' +
+      ex.map(r=>`<tr>
+        <td style="vertical-align:top;">${r.iso?fmtTs(r.iso):r.started_at}</td>
+        <td style="vertical-align:top;">${r.run_date}</td>
+        <td style="vertical-align:top; font-weight:500;">${EVNAMES[r.step]||r.step}</td>
+        <td style="vertical-align:top;" data-tip="${r.status}">${badge(r.status)}</td>
+        <td style="white-space:pre-wrap; font-size:12.5px; color:var(--muted); line-height:1.7;">${r.detail||''}</td></tr>`).join('');
+  } else {
+    $('#ex-hist').innerHTML = '<tr><td style="color:var(--muted)">暂无执行记录——守护进程每执行一个步骤会在这里留一条流水（下一个交易日开始积累）</td></tr>';
   }
 }
 
@@ -677,7 +707,7 @@ $('#tour-btn').onclick = async ()=>{
 };
 
 /* ---------- 路由 ---------- */
-const loaders = {overview:loadOverview, lots:loadLots, history:loadHistory, runs:loadRuns,
+const loaders = {overview:loadOverview, exec:loadExec, lots:loadLots, history:loadHistory, runs:loadRuns,
                  events:loadEvents, cal:loadCal, manual:loadManual, config:loadConfig, help:()=>{}};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
