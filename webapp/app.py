@@ -91,6 +91,31 @@ def index():
     return FileResponse(os.path.join(HERE, "static", "index.html"))
 
 
+def _sched_details(schedule, open_lots, snap):
+    """给事件表的每一项生成精确明细: 会对哪些票、以什么价、下什么单。"""
+    g, sc, b, ex = cfg["gate"], cfg["screener"], cfg["budget"], cfg["exits"]
+    limit_lots = [l for l in open_lots if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]
+    lots_line = "、".join(f"{l['symbol']}×{l['qty']} @≥{l['target_price']}" for l in limit_lots) \
+        or "（当前无待挂仓位；若今晚有新买入将一并挂单）"
+    trail_line = "、".join(f"{l['symbol']}×{l['qty']}" for l in limit_lots) or "（当前无待挂仓位）"
+    est = ""
+    if snap and snap.get("netliq"):
+        v = min(b["nightly_max_usd"], max(0.0, b["gross_max_x_netliq"] * snap["netliq"] - snap["gross"]))
+        est = f"，按最新快照估算 ≈ ${v:,.0f}"
+    det = {
+        "gate_check": f"实时取 VIX/SPY 判定今晚是否开仓（VIX≥{g['vix_min']} 或 SPY≤{g['spy_max_pct']}% 即放行；被拦截则跳过今晚买入，卖出链不受影响）",
+        "build_plan": f"若放行：抓 Finviz 跌幅榜，跳过前 {sc['skip_rank']} 名取 {sc['n_stocks']} 只；预算 = min(${b['nightly_max_usd']:,}, {b['gross_max_x_netliq']}×净值−现持仓){est}；可用资金低于 ${b['min_available_funds_usd']:,} 则放弃",
+        "submit_moc": f"对选出的 ~{sc['n_stocks']} 只各提交 MOC 收盘竞价买单（每只≈预算/{sc['n_stocks']}，按官方收盘价成交，NYSE 截止 15:50 ET）",
+        "confirm_fills": f"拉取今日买入成交，逐笔登记 lot，目标价 = 成交均价 ×{1 + ex['overnight_target_pct'] / 100:.3f}",
+        "overnight_sells": f"挂 OVERNIGHT 场所限价卖单（防超卖清点后，+{ex['overnight_target_pct']}% 起、市价更高则跟随抬价）：{lots_line}",
+        "premarket_sells": f"盘前挂 SMART 限价卖单（outsideRth，同价规则）：{lots_line}",
+        "open_trail": f"撤系统限价卖单，改挂 {ex['trail_pct']}% 追踪卖出：{trail_line}",
+        "daily_report": "与 IB 对账（回填真实卖出价与盈亏并播报）→ 净值快照 → Discord 日报 → 影子实验回填",
+    }
+    for ev in schedule:
+        ev["detail"] = det.get(ev["name"], "")
+
+
 @app.get("/api/overview")
 def overview():
     today = now_et().date()
@@ -100,6 +125,7 @@ def overview():
     snap = q("SELECT * FROM snapshots ORDER BY date DESC LIMIT 1")
     run = q("SELECT * FROM nightly_runs ORDER BY date DESC LIMIT 1")
     open_lots = q("SELECT * FROM lots WHERE state NOT IN ('CLOSED','ERROR') ORDER BY lot_id DESC")
+    _sched_details(schedule, open_lots, snap[0] if snap else None)
     gw = probe_handshake(cfg["ib"]["host"], cfg["ib"]["port"], timeout=8)
     return {
         "now_et": now_et().strftime("%Y-%m-%d %H:%M ET"),
@@ -498,6 +524,26 @@ async def action_flatten():
             msg += f"; 防超卖跳过: {', '.join(skipped)} (有手动在途卖单)"
         return msg
     return await _run_manual("一键清仓 (全部市价卖出)", run)
+
+
+@app.get("/api/gate/history")
+def gate_history(days: int = 180):
+    """VIX 与 SPY 日涨跌的历史序列 + 闸门阈值, 供决策页图表。"""
+    def build():
+        import yfinance as yf
+        mkt = yf.download(["SPY", "^VIX"], period=f"{days + 30}d", interval="1d",
+                          progress=False, auto_adjust=True, group_by="ticker")
+        vix = {str(k.date()): round(float(v), 2) for k, v in mkt["^VIX"]["Close"].dropna().items()}
+        spy_pct_s = (mkt["SPY"]["Close"].dropna().pct_change() * 100).dropna()
+        dates = [str(k.date()) for k in spy_pct_s.index][-days:]
+        spy_pct = {str(k.date()): round(float(v), 2) for k, v in spy_pct_s.items()}
+        g = cfg["gate"]
+        return {"dates": dates,
+                "vix": [vix.get(d) for d in dates],
+                "spy_pct": [spy_pct.get(d) for d in dates],
+                "passed": [bool((vix.get(d) or 0) >= g["vix_min"] or (spy_pct.get(d) or 0) <= g["spy_max_pct"]) for d in dates],
+                "vix_min": g["vix_min"], "spy_max_pct": g["spy_max_pct"]}
+    return cached("gate_hist", 3600, build)
 
 
 @app.get("/api/shadow/summary")
