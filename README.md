@@ -21,13 +21,15 @@
 ## 部署拓扑
 
 ```
-Windows(家) ── IB Gateway :4001
-   │  ssh -R 4003:127.0.0.1:4001  (反向隧道, 开机自启)
-   ▼
+Windows(家) ── IB Gateway :4001  (API 设置里把服务器 IP 加入 Trusted IPs)
+   ▲  局域网直连 192.168.8.223:4001
 Linux 服务器 /opt/ib-trading
-   ├─ autotrader.service   (守护进程, 经隧道下单)
+   ├─ autotrader.service   (守护进程)
    └─ ibtrading-web.service (http://<server>/ 观测面板)
 ```
+
+备选：Gateway 不便加白名单时，可用 Windows→服务器的 SSH 反向隧道
+（`deploy/windows_tunnel.ps1`，服务器侧 127.0.0.1:4003 → Gateway 4001，来源伪装为本机）。
 
 ## 快速开始
 

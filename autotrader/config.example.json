@@ -1,6 +1,6 @@
 {
   "mode": "dry",
-  "ib": { "host": "127.0.0.1", "port": 4003, "client_id": 31, "paper_port": 4002 },
+  "ib": { "host": "192.168.8.223", "port": 4001, "client_id": 31, "paper_port": 4002 },
   "gate": { "enabled": true, "vix_min": 17.0, "spy_max_pct": -0.25 },
   "screener": {
     "finviz_url": "https://finviz.com/screener.ashx?v=141&f=cap_midover,sh_avgvol_o1000,sh_price_o15,sh_relvol_o1,ta_perf_ddown&o=change&r={}",
