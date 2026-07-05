@@ -19,6 +19,8 @@
     "overnight_target_pct": 1.5,
     "premarket_limit": true,
     "trail_pct": 0.3,
+    "follow_market": true,
+    "follow_buffer_pct": 0.1,
     "leftover_policy": "alert"
   },
   "schedule_et": {

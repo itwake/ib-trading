@@ -284,6 +284,8 @@ EDITABLE = {
     "budget.per_stock_max_pct": ("num", 1, 100),
     "exits.overnight_target_pct": ("num", 0.1, 10),
     "exits.trail_pct": ("num", 0.05, 5),
+    "exits.follow_market": ("bool",),
+    "exits.follow_buffer_pct": ("num", 0.0, 2),
     "risk.cushion_alert_pct": ("num", 1, 50),
     "notify.heartbeat_minutes": ("int", 0, 1440),
     "notify.discord_webhook": ("str",),
@@ -441,13 +443,16 @@ async def action_sell_lot(lot_id: int, how: str):
     lot = lots[0]
 
     async def run(eng):
-        await eng.broker.cancel_open_sells(lot["symbol"])
+        await eng.broker.cancel_open_sells(lot["symbol"])  # 只撤系统自己的单
         await asyncio.sleep(0.5)
+        qty, pos, pending = await eng.broker.sellable(lot["symbol"], lot["qty"])
+        if qty <= 0:
+            return f"跳过: 持仓 {pos}, 在途卖单 {pending}(含手动) — 防超卖"
         if how == "market":
-            return await eng.broker.sell_market(lot["symbol"], lot["qty"])
+            return await eng.broker.sell_market(lot["symbol"], qty)
         if how == "trail":
-            return await eng.broker.sell_trail(lot["symbol"], lot["qty"], cfg["exits"]["trail_pct"])
-        return await eng.broker.sell_premarket(lot["symbol"], lot["qty"], lot["target_price"])
+            return await eng.broker.sell_trail(lot["symbol"], qty, cfg["exits"]["trail_pct"])
+        return await eng.broker.sell_premarket(lot["symbol"], qty, lot["target_price"])
 
     label = {"market": "市价卖出", "trail": "追踪卖出", "limit": "目标价限价卖出"}.get(how, how)
     return await _run_manual(f"{label} {lot['symbol']} x{lot['qty']} (lot {lot_id})", run)
@@ -476,14 +481,22 @@ async def action_cancel_all():
 async def action_flatten():
     async def run(eng):
         pos = await eng.broker.positions()
-        n = 0
         for p in pos:
-            await eng.broker.cancel_open_sells(p.contract.symbol)
+            await eng.broker.cancel_open_sells(p.contract.symbol)  # 只撤系统自己的单
         await asyncio.sleep(0.5)
+        n, skipped = 0, []
         for p in pos:
-            await eng.broker.sell_market(p.contract.symbol, int(p.position))
+            sym = p.contract.symbol
+            qty, held, pending = await eng.broker.sellable(sym, int(p.position))
+            if qty <= 0:
+                skipped.append(f"{sym}(在途{pending})")
+                continue
+            await eng.broker.sell_market(sym, qty)
             n += 1
-        return f"已对 {n} 只持仓提交市价清仓单"
+        msg = f"已对 {n} 只持仓提交市价清仓单"
+        if skipped:
+            msg += f"; 防超卖跳过: {', '.join(skipped)} (有手动在途卖单)"
+        return msg
     return await _run_manual("一键清仓 (全部市价卖出)", run)
 
 

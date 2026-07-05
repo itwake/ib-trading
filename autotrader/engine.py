@@ -80,40 +80,73 @@ class Engine:
             n += 1
         self.notify.send(f"[{d}] 成交确认: {n} 笔新买入已入台账")
 
+    async def _sell_price_for(self, lot):
+        """智能挂价: 市价已超目标则跟随抬价 (不超过 ask), 否则用目标价。"""
+        target = lot["target_price"]
+        ex = self.cfg["exits"]
+        if not ex.get("follow_market", True):
+            return target, "TARGET"
+        c = await self.broker.qualify(lot["symbol"])
+        if not c:
+            return target, "TARGET"
+        bid, ask, last = await self.broker.market_ref(c)
+        from broker import smart_limit
+        price, reason = smart_limit(target, bid, ask, last, ex.get("follow_buffer_pct", 0.1))
+        return price, reason
+
+    async def _staged_sell(self, lot, place_fn, kind):
+        """挂单前防超卖检查 + 智能定价。返回描述行或 None(跳过)。"""
+        qty, pos, pending = await self.broker.sellable(lot["symbol"], lot["qty"])
+        if qty <= 0:
+            self.notify.send(
+                f"跳过 {lot['symbol']}: 持仓 {pos}, 在途卖单 {pending}(含手动) — 防超卖", "warn")
+            return None
+        price, reason = await self._sell_price_for(lot)
+        t = await place_fn(lot["symbol"], qty, price)
+        self.db.record_order(getattr(getattr(t, "order", None), "orderId", -1) if t else -1,
+                             lot["lot_id"], kind, lot["symbol"], qty, price, "submitted", reason)
+        shrink = f" (缩量, 持仓{pos}/在途{pending})" if qty < lot["qty"] else ""
+        return f"{lot['symbol']} x{qty} @{price} [{reason}]{shrink}"
+
     async def do_overnight_sells(self, d):
-        lots = self.db.open_lots()
-        n = 0
-        for lot in lots:
+        lines = []
+        for lot in self.db.open_lots():
             if lot["state"] not in ("FILLED", "OVERNIGHT"):
                 continue
-            t = await self.broker.sell_overnight(lot["symbol"], lot["qty"], lot["target_price"])
-            self.db.set_lot_state(lot["lot_id"], "OVERNIGHT")
-            self.db.record_order(getattr(getattr(t, "order", None), "orderId", -1) if t else -1,
-                                 lot["lot_id"], "OVERNIGHT_SELL", lot["symbol"], lot["qty"],
-                                 lot["target_price"], "submitted")
-            n += 1
-        if n:
-            self.notify.send(f"隔夜限价卖单已挂 {n} 笔 (+{self.cfg['exits']['overnight_target_pct']}%)")
+            line = await self._staged_sell(lot, self.broker.sell_overnight, "OVERNIGHT_SELL")
+            if line:
+                self.db.set_lot_state(lot["lot_id"], "OVERNIGHT")
+                lines.append(line)
+        if lines:
+            self.notify.send("隔夜限价卖单:\n" + "\n".join(lines))
 
     async def do_premarket_sells(self, d):
         await self._resync_lots_with_positions("盘前")
-        lots = [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT")]
-        for lot in lots:
-            await self.broker.sell_premarket(lot["symbol"], lot["qty"], lot["target_price"])
-            self.db.set_lot_state(lot["lot_id"], "PREMARKET")
-        if lots:
-            self.notify.send(f"盘前限价卖单已挂 {len(lots)} 笔")
+        lines = []
+        for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT")]:
+            line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL")
+            if line:
+                self.db.set_lot_state(lot["lot_id"], "PREMARKET")
+                lines.append(line)
+        if lines:
+            self.notify.send("盘前限价卖单:\n" + "\n".join(lines))
 
     async def do_open_trail(self, d):
         await self._resync_lots_with_positions("开盘")
-        lots = [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]
-        for lot in lots:
-            await self.broker.cancel_open_sells(lot["symbol"])
+        lines = []
+        for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]:
+            await self.broker.cancel_open_sells(lot["symbol"])  # 只撤系统自己的单
             await asyncio.sleep(0.5)
-            await self.broker.sell_trail(lot["symbol"], lot["qty"], self.cfg["exits"]["trail_pct"])
+            qty, pos, pending = await self.broker.sellable(lot["symbol"], lot["qty"])
+            if qty <= 0:
+                self.notify.send(
+                    f"跳过追踪 {lot['symbol']}: 持仓 {pos}, 在途卖单 {pending}(含手动) — 防超卖", "warn")
+                continue
+            await self.broker.sell_trail(lot["symbol"], qty, self.cfg["exits"]["trail_pct"])
             self.db.set_lot_state(lot["lot_id"], "TRAILING")
-        if lots:
-            self.notify.send(f"开盘追踪卖出已挂 {len(lots)} 笔 ({self.cfg['exits']['trail_pct']}%)")
+            lines.append(f"{lot['symbol']} x{qty}" + (f" (缩量)" if qty < lot["qty"] else ""))
+        if lines:
+            self.notify.send(f"开盘追踪卖出已挂 ({self.cfg['exits']['trail_pct']}%):\n" + "\n".join(lines))
 
     async def do_daily_report(self, d):
         await self._resync_lots_with_positions("日报")
