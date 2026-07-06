@@ -9,10 +9,10 @@ log = logging.getLogger("gate")
 
 
 def check_gate(cfg):
-    """返回 (passed: bool|None, vix: float, spy_pct: float, reason: str)"""
+    """返回 (passed: bool|None, vix: float, spy_pct: float, reason: str)
+    闸门停用时仍取数并给出影子判定 (只记录不拦截)。"""
     g = cfg["gate"]
-    if not g.get("enabled", True):
-        return True, None, None, "闸门未启用"
+    enabled = g.get("enabled", True)
     try:
         import math
         vix_df = yf.download("^VIX", period="7d", interval="1d", progress=False, auto_adjust=False)
@@ -26,9 +26,13 @@ def check_gate(cfg):
         as_of = str(vix_close.index[-1].date()) if hasattr(vix_close.index[-1], "date") else ""
     except Exception as e:
         log.error("闸门数据获取失败: %s", e)
+        if not enabled:
+            return True, None, None, "闸门停用 (且数据获取失败)"
         return None, None, None, f"数据获取失败: {e}"
 
-    passed = (vix >= g["vix_min"]) or (spy_pct <= g["spy_max_pct"])
-    reason = (f"VIX={vix:.1f} (阈值>={g['vix_min']}), SPY当日={spy_pct:+.2f}% "
+    would = (vix >= g["vix_min"]) or (spy_pct <= g["spy_max_pct"])
+    detail = (f"VIX={vix:.1f} (阈值>={g['vix_min']}), SPY当日={spy_pct:+.2f}% "
               f"(阈值<={g['spy_max_pct']}%), 数据截至 {as_of}")
-    return passed, vix, spy_pct, reason
+    if not enabled:
+        return True, vix, spy_pct, f"闸门停用·影子判定[{'放行' if would else '拦截'}] {detail}"
+    return would, vix, spy_pct, detail
