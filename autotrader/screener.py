@@ -39,14 +39,21 @@ def fetch_finviz(cfg):
 async def fetch_ib_scanner(broker, cfg):
     """Finviz 被拒时的后备: IB 市场扫描器 TOP_PERC_LOSE。
     条件对齐 Finviz 筛选 (中大盘 >$2B, 价格 >$15, 高成交), 排序同为跌幅最大在前。
-    change_pct 扫描器不直接给出, 置 0 (仅用于展示, 选股只依赖排序)。"""
-    from ib_async import ScannerSubscription
+    市值须走 filter options (旧字段 marketCapAbove 会被静默取消订阅);
+    stockTypeFilter 已被 IB 禁用, 改用返回的 contractDetails.stockType 后置排除 ETF/基金。
+    change_pct 扫描器不直接给出, 置 0 (选股只依赖排序)。"""
+    from ib_async import ScannerSubscription, TagValue
     sub = ScannerSubscription(
         instrument="STK", locationCode="STK.US.MAJOR", scanCode="TOP_PERC_LOSE",
-        abovePrice=15, aboveVolume=1_000_000, marketCapAbove=2_000_000_000,
-        numberOfRows=30)
-    rows = await broker.ib.reqScannerDataAsync(sub)
-    out = [(r.contractDetails.contract.symbol, 0.0) for r in rows]
+        abovePrice=15, aboveVolume=1_000_000, numberOfRows=30)
+    filt = [TagValue("marketCapAbove1e6", "2000")]
+    rows = await broker.ib.reqScannerDataAsync(sub, scannerSubscriptionFilterOptions=filt)
+    out = []
+    for r in rows:
+        st = (getattr(r.contractDetails, "stockType", "") or "").upper()
+        if any(x in st for x in ("ETF", "ETN", "FUND")):
+            continue
+        out.append((r.contractDetails.contract.symbol, 0.0))
     log.info("IB 扫描器候选: %s", [t for t, _ in out[:12]])
     return out
 
