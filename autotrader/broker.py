@@ -121,27 +121,36 @@ class Broker:
             log.warning("行情获取失败 %s: %s", contract.symbol, e)
             return None, None, None
 
-    async def open_sell_qty(self, symbol, ours_only=False):
-        """在途卖单总量 (含其他客户端/手动挂单)。ours_only=True 只统计本系统的。"""
+    async def sell_context(self):
+        """一次性快照: (持仓表, 在途卖单表)。循环挂单必须复用同一份快照,
+        逐票重复调 reqPositions 会竞态返回空 (2026-07-06 事故根因)。"""
+        pos = {p.contract.symbol: int(p.position) for p in await self.positions()}
         await self.ib.reqAllOpenOrdersAsync()
-        total = 0
+        pend = {}
         for t in self.ib.openTrades():
-            if t.contract.symbol != symbol or t.order.action != "SELL":
-                continue
-            if ours_only and t.order.orderRef != ORDER_TAG:
+            if t.order.action != "SELL":
                 continue
             rem = t.orderStatus.remaining
-            total += int(rem) if rem and rem > 0 else int(t.order.totalQuantity)
-        return total
+            qty = int(rem) if rem and rem > 0 else int(t.order.totalQuantity)
+            pend[t.contract.symbol] = pend.get(t.contract.symbol, 0) + qty
+        return pos, pend
+
+    @staticmethod
+    def sellable_from(ctx, symbol, want_qty):
+        """基于快照计算可卖量。返回 (可下单数量, 持仓, 在途卖量)。"""
+        pos_map, pend_map = ctx
+        pos, pend = pos_map.get(symbol, 0), pend_map.get(symbol, 0)
+        return max(0, min(int(want_qty), pos - pend)), pos, pend
+
+    @staticmethod
+    def ctx_add_pending(ctx, symbol, qty):
+        """本地登记刚挂出的单, 供同一循环内同票的后续 lot 使用。"""
+        ctx[1][symbol] = ctx[1].get(symbol, 0) + int(qty)
 
     async def sellable(self, symbol, want_qty):
-        """防超卖: 可卖 = 实际持仓 - 全部在途卖单。返回 (可下单数量, 持仓, 在途卖量)。"""
-        pos = 0
-        for p in await self.positions():
-            if p.contract.symbol == symbol:
-                pos = int(p.position)
-        pending = await self.open_sell_qty(symbol)
-        return max(0, min(int(want_qty), pos - pending)), pos, pending
+        """单笔场景的便捷封装 (内部仍只取一次快照)。"""
+        ctx = await self.sell_context()
+        return self.sellable_from(ctx, symbol, want_qty)
 
     def _send(self, contract, order, kind):
         order.orderRef = ORDER_TAG

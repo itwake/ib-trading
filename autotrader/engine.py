@@ -94,15 +94,16 @@ class Engine:
         price, reason = smart_limit(target, bid, ask, last, ex.get("follow_buffer_pct", 0.1))
         return price, reason
 
-    async def _staged_sell(self, lot, place_fn, kind, skips=None):
-        """挂单前防超卖检查 + 智能定价。返回描述行或 None(跳过, 原因记入 skips)。"""
-        qty, pos, pending = await self.broker.sellable(lot["symbol"], lot["qty"])
+    async def _staged_sell(self, lot, place_fn, kind, ctx, skips=None):
+        """基于共享快照的防超卖检查 + 智能定价。返回描述行或 None(跳过)。"""
+        qty, pos, pending = self.broker.sellable_from(ctx, lot["symbol"], lot["qty"])
         if qty <= 0:
             if skips is not None:
                 skips.append(f"{lot['symbol']}(持仓{pos}/在途{pending})")
             return None
         price, reason = await self._sell_price_for(lot)
         t = await place_fn(lot["symbol"], qty, price)
+        self.broker.ctx_add_pending(ctx, lot["symbol"], qty)
         self.db.record_order(getattr(getattr(t, "order", None), "orderId", -1) if t else -1,
                              lot["lot_id"], kind, lot["symbol"], qty, price, "submitted", reason)
         shrink = f" (缩量, 持仓{pos}/在途{pending})" if qty < lot["qty"] else ""
@@ -110,10 +111,11 @@ class Engine:
 
     async def do_overnight_sells(self, d):
         lines, skips = [], []
+        ctx = await self.broker.sell_context()
         for lot in self.db.open_lots():
             if lot["state"] not in ("FILLED", "OVERNIGHT"):
                 continue
-            line = await self._staged_sell(lot, self.broker.sell_overnight, "OVERNIGHT_SELL", skips)
+            line = await self._staged_sell(lot, self.broker.sell_overnight, "OVERNIGHT_SELL", ctx, skips)
             if line:
                 self.db.set_lot_state(lot["lot_id"], "OVERNIGHT")
                 lines.append(line)
@@ -125,8 +127,9 @@ class Engine:
     async def do_premarket_sells(self, d):
         await self._resync_lots_with_positions("盘前")
         lines, skips = [], []
+        ctx = await self.broker.sell_context()
         for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT")]:
-            line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL", skips)
+            line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL", ctx, skips)
             if line:
                 self.db.set_lot_state(lot["lot_id"], "PREMARKET")
                 lines.append(line)
@@ -138,14 +141,19 @@ class Engine:
     async def do_open_trail(self, d):
         await self._resync_lots_with_positions("开盘")
         lines, skips = [], []
-        for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]:
+        lots = [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]
+        for lot in lots:
             await self.broker.cancel_open_sells(lot["symbol"])  # 只撤系统自己的单
-            await asyncio.sleep(0.5)
-            qty, pos, pending = await self.broker.sellable(lot["symbol"], lot["qty"])
+        if lots:
+            await asyncio.sleep(2)  # 等撤单回报后再取快照
+        ctx = await self.broker.sell_context()
+        for lot in lots:
+            qty, pos, pending = self.broker.sellable_from(ctx, lot["symbol"], lot["qty"])
             if qty <= 0:
                 skips.append(f"{lot['symbol']}(持仓{pos}/在途{pending})")
                 continue
             t = await self.broker.sell_trail(lot["symbol"], qty, self.cfg["exits"]["trail_pct"])
+            self.broker.ctx_add_pending(ctx, lot["symbol"], qty)
             self.db.set_lot_state(lot["lot_id"], "TRAILING")
             self.db.record_order(getattr(getattr(t, "order", None), "orderId", -1) if t else -1,
                                  lot["lot_id"], "TRAIL_SELL", lot["symbol"], qty, 0,
@@ -190,6 +198,9 @@ class Engine:
             if e.side == "SLD":
                 q0, cash0 = sells.get(c.symbol, (0.0, 0.0))
                 sells[c.symbol] = (q0 + e.shares, cash0 + e.shares * e.price)
+        if not pos and not sells and self.db.open_lots():
+            log.warning("对账(%s): 持仓快照为空且无卖出成交, 疑似数据竞态, 跳过本次对账", tag)
+            return
         closed_msgs = []
         for lot in self.db.open_lots():
             if pos.get(lot["symbol"], 0) > 0:
