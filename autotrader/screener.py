@@ -48,12 +48,20 @@ async def fetch_ib_scanner(broker, cfg):
         abovePrice=15, aboveVolume=1_000_000, numberOfRows=30)
     filt = [TagValue("marketCapAbove1e6", "2000")]
     rows = await broker.ib.reqScannerDataAsync(sub, scannerSubscriptionFilterOptions=filt)
+    # 扫描结果的 contractDetails 元数据为空, 需逐个补查才能拿到 stockType 排除 ETF/基金
+    from ib_async import Stock
     out = []
-    for r in rows:
-        st = (getattr(r.contractDetails, "stockType", "") or "").upper()
+    for r in rows[:18]:
+        sym = r.contractDetails.contract.symbol
+        try:
+            cds = await broker.ib.reqContractDetailsAsync(Stock(sym, "SMART", "USD"))
+            st = (cds[0].stockType or "").upper() if cds else ""
+        except Exception:
+            st = ""
         if any(x in st for x in ("ETF", "ETN", "FUND")):
+            log.info("排除 %s (stockType=%s)", sym, st)
             continue
-        out.append((r.contractDetails.contract.symbol, 0.0))
+        out.append((sym, 0.0))
     log.info("IB 扫描器候选: %s", [t for t, _ in out[:12]])
     return out
 
