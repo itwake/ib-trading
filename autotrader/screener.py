@@ -12,9 +12,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 
 def fetch_finviz(cfg):
-    """返回 [(ticker, change_pct)] 按跌幅升序 (Finviz o=change 已排序)。"""
+    """返回 [(ticker, change_pct)] 按跌幅升序 (Finviz o=change 已排序)。
+    服务器直连 IP 被 Finviz 拒 (403), 配置 screener.proxy 借道 Windows 上的 Clash 出口。"""
     url = cfg["screener"]["finviz_url"].format(0)
-    resp = requests.get(url, headers=HEADERS, timeout=20)
+    proxy = cfg["screener"].get("proxy") or None
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    resp = requests.get(url, headers=HEADERS, timeout=20, proxies=proxies)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     table = soup.find("table", class_="screener_table")
