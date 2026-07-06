@@ -48,7 +48,9 @@ def todays_schedule(cfg, d):
     sched.append(("build_plan", close - timedelta(minutes=22)))
     sched.append(("submit_moc", close - timedelta(minutes=15)))
     sched.append(("confirm_fills", close + timedelta(minutes=10)))
-    sched.append(("overnight_sells", at(s["overnight_sells"])))
+    # 隔夜时段属于"下一交易日", 在其前一个日历日晚间开盘 (周日~周四 20:00 ET)。
+    # 例: 周一交易日的隔夜挂单在周日 20:05; 跨周末持仓因此不会漏排。
+    sched.append(("overnight_sells", at(s["overnight_sells"], base_date=d - timedelta(days=1))))
     sched.append(("premarket_sells", at(s["premarket_sells"])))
     sched.append(("open_trail", open_ + timedelta(minutes=1)))
     sched.append(("daily_report", close + timedelta(minutes=20)))

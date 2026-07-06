@@ -94,12 +94,12 @@ class Engine:
         price, reason = smart_limit(target, bid, ask, last, ex.get("follow_buffer_pct", 0.1))
         return price, reason
 
-    async def _staged_sell(self, lot, place_fn, kind):
-        """挂单前防超卖检查 + 智能定价。返回描述行或 None(跳过)。"""
+    async def _staged_sell(self, lot, place_fn, kind, skips=None):
+        """挂单前防超卖检查 + 智能定价。返回描述行或 None(跳过, 原因记入 skips)。"""
         qty, pos, pending = await self.broker.sellable(lot["symbol"], lot["qty"])
         if qty <= 0:
-            self.notify.send(
-                f"跳过 {lot['symbol']}: 持仓 {pos}, 在途卖单 {pending}(含手动) — 防超卖", "warn")
+            if skips is not None:
+                skips.append(f"{lot['symbol']}(持仓{pos}/在途{pending})")
             return None
         price, reason = await self._sell_price_for(lot)
         t = await place_fn(lot["symbol"], qty, price)
@@ -109,38 +109,41 @@ class Engine:
         return f"{lot['symbol']} x{qty} @{price} [{reason}]{shrink}"
 
     async def do_overnight_sells(self, d):
-        lines = []
+        lines, skips = [], []
         for lot in self.db.open_lots():
             if lot["state"] not in ("FILLED", "OVERNIGHT"):
                 continue
-            line = await self._staged_sell(lot, self.broker.sell_overnight, "OVERNIGHT_SELL")
+            line = await self._staged_sell(lot, self.broker.sell_overnight, "OVERNIGHT_SELL", skips)
             if line:
                 self.db.set_lot_state(lot["lot_id"], "OVERNIGHT")
                 lines.append(line)
         if lines:
             self.notify.send("隔夜限价卖单:\n" + "\n".join(lines))
+        if skips:
+            self.notify.send("防超卖跳过(已有在途卖单/手动单): " + ", ".join(skips), "warn")
 
     async def do_premarket_sells(self, d):
         await self._resync_lots_with_positions("盘前")
-        lines = []
+        lines, skips = [], []
         for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT")]:
-            line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL")
+            line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL", skips)
             if line:
                 self.db.set_lot_state(lot["lot_id"], "PREMARKET")
                 lines.append(line)
         if lines:
             self.notify.send("盘前限价卖单:\n" + "\n".join(lines))
+        if skips:
+            self.notify.send("防超卖跳过(已有在途卖单/手动单): " + ", ".join(skips), "warn")
 
     async def do_open_trail(self, d):
         await self._resync_lots_with_positions("开盘")
-        lines = []
+        lines, skips = [], []
         for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]:
             await self.broker.cancel_open_sells(lot["symbol"])  # 只撤系统自己的单
             await asyncio.sleep(0.5)
             qty, pos, pending = await self.broker.sellable(lot["symbol"], lot["qty"])
             if qty <= 0:
-                self.notify.send(
-                    f"跳过追踪 {lot['symbol']}: 持仓 {pos}, 在途卖单 {pending}(含手动) — 防超卖", "warn")
+                skips.append(f"{lot['symbol']}(持仓{pos}/在途{pending})")
                 continue
             t = await self.broker.sell_trail(lot["symbol"], qty, self.cfg["exits"]["trail_pct"])
             self.db.set_lot_state(lot["lot_id"], "TRAILING")
@@ -150,6 +153,8 @@ class Engine:
             lines.append(f"{lot['symbol']} x{qty}" + (f" (缩量)" if qty < lot["qty"] else ""))
         if lines:
             self.notify.send(f"开盘追踪卖出已挂 ({self.cfg['exits']['trail_pct']}%):\n" + "\n".join(lines))
+        if skips:
+            self.notify.send("防超卖跳过(已有在途卖单/手动单): " + ", ".join(skips), "warn")
 
     async def do_daily_report(self, d):
         await self._resync_lots_with_positions("日报")
@@ -212,14 +217,20 @@ class Engine:
         "daily_report": "do_daily_report",
     }
 
+    # 事件错过后仍值得补执行的时间窗 (秒)。买入链严格准时 (MOC 有截止), 卖出链宽容自愈。
+    GRACE = {"overnight_sells": 7 * 3600, "premarket_sells": 5 * 3600, "open_trail": 6 * 3600,
+             "confirm_fills": 4 * 3600, "daily_report": 12 * 3600, "submit_moc": 120}
+
     async def run_day(self, d, from_now_only=True):
         """执行交易日 d 的事件表。买入链在闸门拦截时跳过, 卖出链始终执行 (照顾已有持仓)。"""
         sched = cal.todays_schedule(self.cfg, d)
         gate_passed = None
         for name, ts in sched:
             wait = (ts - now_et()).total_seconds()
-            if from_now_only and wait < -300:
-                continue  # 已过时的事件跳过
+            if from_now_only and wait < -self.GRACE.get(name, 300):
+                continue  # 超出补执行窗口的过期事件跳过
+            if wait < -60:
+                self.notify.send(f"补执行 {name} (迟到 {-wait / 60:.0f} 分钟)", "warn")
             if wait > 0:
                 log.info("等待 %s @ %s (%.0f 分钟)", name, ts.strftime("%H:%M ET"), wait / 60)
                 await asyncio.sleep(wait)
