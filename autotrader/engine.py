@@ -49,11 +49,18 @@ class Engine:
         if avail < b["min_available_funds_usd"]:
             self.notify.send(f"可用资金 ${avail:,.0f} 低于阈值, 今晚不开仓", "warn")
             return False
-        candidates = fetch_finviz(self.cfg)
+        try:
+            candidates = fetch_finviz(self.cfg)
+            src = "Finviz"
+        except Exception as e:
+            self.notify.send(f"Finviz 失败({str(e)[:80]}), 切换 IB 扫描器后备", "warn")
+            from screener import fetch_ib_scanner
+            candidates = await fetch_ib_scanner(self.broker, self.cfg)
+            src = "IB扫描器"
         prices = await self.broker.last_prices([t for t, _ in candidates[:15]])
         self.plan = build_plan(self.cfg, candidates, prices, budget)
         lines = [f"{t} x{s} @~{p:.2f} (${s * p:,.0f})" for t, s, p in self.plan]
-        self.notify.send(f"[{d}] 买入计划 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
+        self.notify.send(f"[{d}] 买入计划({src}) 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
         self._earnings_watch(d)  # 仅观察不过滤 (2026-07-06 决定: 样本 21 笔不足以立规则)
         self.db.record_run(str(d), True, 0, 0, len(self.plan), budget, "plan built")
         return bool(self.plan)

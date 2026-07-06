@@ -36,6 +36,21 @@ def fetch_finviz(cfg):
     return rows
 
 
+async def fetch_ib_scanner(broker, cfg):
+    """Finviz 被拒时的后备: IB 市场扫描器 TOP_PERC_LOSE。
+    条件对齐 Finviz 筛选 (中大盘 >$2B, 价格 >$15, 高成交), 排序同为跌幅最大在前。
+    change_pct 扫描器不直接给出, 置 0 (仅用于展示, 选股只依赖排序)。"""
+    from ib_async import ScannerSubscription
+    sub = ScannerSubscription(
+        instrument="STK", locationCode="STK.US.MAJOR", scanCode="TOP_PERC_LOSE",
+        abovePrice=15, aboveVolume=1_000_000, marketCapAbove=2_000_000_000,
+        numberOfRows=30)
+    rows = await broker.ib.reqScannerDataAsync(sub)
+    out = [(r.contractDetails.contract.symbol, 0.0) for r in rows]
+    log.info("IB 扫描器候选: %s", [t for t, _ in out[:12]])
+    return out
+
+
 def build_plan(cfg, candidates, prices, budget):
     """candidates: [(ticker, chg)], prices: {ticker: last_price}
     返回 [(ticker, shares, ref_price)] 平均分配, 手数取整。"""
