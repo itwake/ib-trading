@@ -54,8 +54,30 @@ class Engine:
         self.plan = build_plan(self.cfg, candidates, prices, budget)
         lines = [f"{t} x{s} @~{p:.2f} (${s * p:,.0f})" for t, s, p in self.plan]
         self.notify.send(f"[{d}] 买入计划 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
+        self._earnings_watch(d)  # 仅观察不过滤 (2026-07-06 决定: 样本 21 笔不足以立规则)
         self.db.record_run(str(d), True, 0, 0, len(self.plan), budget, "plan built")
         return bool(self.plan)
+
+    def _earnings_watch(self, d):
+        """观察性标记: 计划里哪些票在持仓期内(今晚AMC/明晨BMO)发布财报。只播报留痕, 不拦截。"""
+        try:
+            import yfinance as yf
+            nxt = str(cal.next_trading_day(d))
+            hits = []
+            for t, _s, _p in self.plan:
+                try:
+                    c = yf.Ticker(t).calendar
+                    eds = c.get("Earnings Date") if isinstance(c, dict) else None
+                    if eds and str(eds[0]) in (str(d), nxt):
+                        hits.append(f"{t}({eds[0]})")
+                except Exception:
+                    pass
+            if hits:
+                self.notify.send("👁 财报暴露观察(未过滤): " + ", ".join(hits) +
+                                 " 将在持仓期内发布财报 — 历史上此类 21 笔净 -$833", "warn")
+                self.db.event("earnings_watch", ", ".join(hits))
+        except Exception as e:
+            log.warning("财报观察失败: %s", e)
 
     async def do_submit_moc(self, d):
         ok = 0
