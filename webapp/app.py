@@ -298,6 +298,9 @@ def set_pause(value: int):
 # ================= 配置管理 =================
 EDITABLE = {
     "mode": ("enum", ["dry", "live"]),
+    "ib.host": ("str",),
+    "ib.port": ("int", 1, 65535),
+    "ib.client_id": ("int", 0, 999),
     "gate.enabled": ("bool",),
     "gate.vix_min": ("num", 0, 100),
     "gate.spy_max_pct": ("num", -10, 0),
@@ -392,7 +395,12 @@ async def set_config(updates: dict):
         Notifier(cfg).send("[配置] 修改: " + "; ".join(changed), "warn")
     except Exception:
         pass
-    return {"ok": True, "result": "已保存: " + "; ".join(changed) + "。守护进程将在下一循环生效，或点「重启守护进程」立即生效。"}
+    ib_changed = any(c.startswith("ib.") for c in changed)
+    tail = "。守护进程将在下一循环生效，或点「重启守护进程」立即生效。"
+    if ib_changed:
+        tail = ("。⚠️ IB 连接参数已改：面板的手动操作/报价会立即用新地址；"
+                "守护进程会在下一个动作自动用新地址连接，但为确保当前会话切换，建议点「重启守护进程」。")
+    return {"ok": True, "result": "已保存: " + "; ".join(changed) + tail}
 
 
 @app.post("/api/action/restart_daemon")
