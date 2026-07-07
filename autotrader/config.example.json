@@ -25,14 +25,10 @@
     "leftover_policy": "alert"
   },
   "schedule_et": {
-    "gate_check": "15:33",
-    "build_plan": "15:38",
-    "submit_moc": "15:45",
-    "confirm_fills": "16:10",
-    "overnight_sells": "20:05",
-    "premarket_sells": "04:05",
-    "open_trail": "09:31",
-    "daily_report": "16:20"
+    "_说明": "卖出链时点=分钟偏移, 负数提前/正数延后。锚点: overnight=隔夜开盘20:00ET, premarket=盘前开始04:00ET, open_trail=开盘09:30ET。买入链锚定收盘自动计算, 不可配。",
+    "overnight_sells_offset_min": 5,
+    "premarket_sells_offset_min": 5,
+    "open_trail_offset_min": -10
   },
   "risk": { "cushion_alert_pct": 12 },
   "notify": { "discord_webhook": "", "heartbeat_minutes": 60 },

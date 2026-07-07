@@ -34,24 +34,31 @@ def market_open_et(d) -> datetime:
 
 def todays_schedule(cfg, d):
     """给定交易日 d, 返回 [(name, datetime_et)] 事件表。
-    收盘相关事件锚定实际收盘时刻 (兼容半日市); 其余用固定 ET 时刻。"""
+    买入链锚定实际收盘时刻 (兼容半日市); 卖出链三个时点由配置的分钟偏移决定:
+      overnight_sells_offset_min  相对隔夜时段开盘 20:00 ET (前一日历日晚, 周日~周四)
+      premarket_sells_offset_min  相对盘前时段开始 04:00 ET
+      open_trail_offset_min       相对开盘 09:30 ET (负数=开盘前, 正数=开盘后)
+    """
     close = market_close_et(d)
     open_ = market_open_et(d)
-    sched = []
-
-    def at(hhmm, base_date=d):
-        h, m = map(int, hhmm.split(":"))
-        return datetime(base_date.year, base_date.month, base_date.day, h, m, tzinfo=ET)
-
     s = cfg["schedule_et"]
-    sched.append(("gate_check", close - timedelta(minutes=27)))
-    sched.append(("build_plan", close - timedelta(minutes=22)))
-    sched.append(("submit_moc", close - timedelta(minutes=15)))
-    sched.append(("confirm_fills", close + timedelta(minutes=10)))
-    # 隔夜时段属于"下一交易日", 在其前一个日历日晚间开盘 (周日~周四 20:00 ET)。
-    # 例: 周一交易日的隔夜挂单在周日 20:05; 跨周末持仓因此不会漏排。
-    sched.append(("overnight_sells", at(s["overnight_sells"], base_date=d - timedelta(days=1))))
-    sched.append(("premarket_sells", at(s["premarket_sells"])))
-    sched.append(("open_trail", open_ + timedelta(minutes=1)))
-    sched.append(("daily_report", close + timedelta(minutes=20)))
+    on_off = float(s.get("overnight_sells_offset_min", 5))
+    pm_off = float(s.get("premarket_sells_offset_min", 5))
+    tr_off = float(s.get("open_trail_offset_min", 1))
+
+    # 隔夜时段属于"下一交易日", 在其前一个日历日晚间开盘。
+    # 例: 周一交易日的隔夜挂单在周日 20:00+offset; 跨周末持仓因此不会漏排。
+    prev = d - timedelta(days=1)
+    sched = [
+        ("gate_check", close - timedelta(minutes=27)),
+        ("build_plan", close - timedelta(minutes=22)),
+        ("submit_moc", close - timedelta(minutes=15)),
+        ("confirm_fills", close + timedelta(minutes=10)),
+        ("overnight_sells", datetime(prev.year, prev.month, prev.day, 20, 0, tzinfo=ET)
+         + timedelta(minutes=on_off)),
+        ("premarket_sells", datetime(d.year, d.month, d.day, 4, 0, tzinfo=ET)
+         + timedelta(minutes=pm_off)),
+        ("open_trail", open_ + timedelta(minutes=tr_off)),
+        ("daily_report", close + timedelta(minutes=20)),
+    ]
     return sorted(sched, key=lambda x: x[1])
