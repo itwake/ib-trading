@@ -121,6 +121,30 @@ class Broker:
             log.warning("行情获取失败 %s: %s", contract.symbol, e)
             return None, None, None
 
+    async def minute_bars(self, symbol):
+        """当日 RTH 1 分钟K线 [[HH:MM(ET), open, high, low, close], ...], 供开盘卖出时机离线复盘。"""
+        from common import ET
+        c = await self.qualify(symbol)
+        if not c:
+            return []
+        bars = await self.ib.reqHistoricalDataAsync(
+            c, endDateTime="", durationStr="1 D", barSizeSetting="1 min",
+            whatToShow="TRADES", useRTH=True, formatDate=2)
+        out = []
+        for b in bars:
+            t = b.date.astimezone(ET) if getattr(b.date, "tzinfo", None) else b.date
+            out.append([t.strftime("%H:%M"), b.open, b.high, b.low, b.close])
+        return out
+
+    async def sector_of(self, symbol):
+        """IB contractDetails 的行业分类 (industry), 失败返回空串。"""
+        try:
+            cds = await self.ib.reqContractDetailsAsync(Stock(symbol, "SMART", "USD"))
+            return (cds[0].industry or "") if cds else ""
+        except Exception as e:
+            log.warning("行业查询失败 %s: %s", symbol, e)
+            return ""
+
     async def sell_context(self):
         """一次性快照: (持仓表, 在途卖单表)。循环挂单必须复用同一份快照,
         逐票重复调 reqPositions 会竞态返回空 (2026-07-06 事故根因)。"""

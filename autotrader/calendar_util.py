@@ -45,6 +45,7 @@ def todays_schedule(cfg, d):
     on_off = float(s.get("overnight_sells_offset_min", 5))
     pm_off = float(s.get("premarket_sells_offset_min", 5))
     tr_off = float(s.get("open_trail_offset_min", 1))
+    md_off = float(s.get("midday_reconcile_offset_min", 145))  # 默认 11:55 ET, 须在 12:00 ET 前
 
     # 隔夜时段属于"下一交易日", 在其前一个日历日晚间开盘。
     # 例: 周一交易日的隔夜挂单在周日 20:00+offset; 跨周末持仓因此不会漏排。
@@ -59,6 +60,8 @@ def todays_schedule(cfg, d):
         ("premarket_sells", datetime(d.year, d.month, d.day, 4, 0, tzinfo=ET)
          + timedelta(minutes=pm_off)),
         ("open_trail", open_ + timedelta(minutes=tr_off)),
+        # 上海时区网关的"当日成交"窗口在 12:00 ET 翻页, 午前固化上午成交 (半日市 13:00 收盘同样适用)
+        ("midday_reconcile", open_ + timedelta(minutes=md_off)),
         ("daily_report", close + timedelta(minutes=20)),
     ]
     return sorted(sched, key=lambda x: x[1])

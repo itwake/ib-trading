@@ -82,9 +82,9 @@
 <nav>
   <button data-s="overview" class="active" data-tip="账户概况、持仓浮盈、净值曲线、今日自动动作时刻表">总览</button>
   <button data-s="exec" data-tip="事件列表：逐条粒度的时间线——每只股票的每张单、每笔成交各占一行；可预知的未来动作（哪只票、什么价）也逐条列出">事件列表</button>
-  <button data-s="lots" data-tip="系统经手的每一笔 lot（一笔买入=一个 lot）：入场、目标、出场、盈亏，以及三种出场规则的影子对比实验">交易台账</button>
+  <button data-s="lots" data-tip="系统经手的每一笔 lot（一笔买入=一个 lot）：入场、目标、出场、盈亏">交易台账</button>
   <button data-s="history" data-tip="上线前一整年的真实成交审计（1298 笔），按策略类型分账，作为策略基准">全年历史</button>
-  <button data-s="runs" data-tip="每晚闸门的判定记录：VIX/SPY 数值、放行/拦截、计划买入数与预算">每晚决策</button>
+  <button data-s="runs" data-tip="每晚闸门的判定记录：VIX/SPY 数值、放行/拦截、计划买入数与预算；以及候选追踪——跌幅榜前 N 名（含未买入的）次日表现，按名次段/板块聚合">每晚决策</button>
   <button data-s="events" data-tip="系统事件流水：手动操作、配置修改、异常告警，全部留痕">事件日志</button>
   <button data-s="cal" data-tip="交易日历：休市日、半日市（提前收盘）、每天的闸门判定与已实现盈亏、持仓股财报日">交易日历</button>
   <button data-s="manual" style="color:var(--amber)" data-tip="自动化的手动兜底：单步触发流程、单仓位应急卖出、一键清仓。不依赖守护进程，面板独立连接 IB">手动操作</button>
@@ -132,6 +132,13 @@
       <div class="chartbox" data-tip="近 6 个月 SPY 每日涨跌幅。绿色柱=当天满足闸门条件（VIX 或 SPY 任一达标），灰色柱=会被拦截的日子。黄虚线=SPY 放行阈值。"><canvas id="spy-chart"></canvas></div>
     </div>
     <div class="scroll"><table id="t-runs"></table></div>
+    <h3 data-tip="每晚把跌幅榜前 N 名全部登记（含没买的），次日自动回填结果：最高价触及 收盘×(1+止盈%) 记为命中。买入区 vs 观察区、各板块的命中率对比，用真实数据回答「该买几名到几名」「哪些板块的大跌不该接」。">👁 候选追踪（含未买入）ⓘ</h3>
+    <div class="cards" id="w-cards"></div>
+    <div class="grid2">
+      <div><h4 style="color:var(--muted); margin:4px 0;">按名次段</h4><div class="scroll" style="max-height:180px"><table id="w-bucket"></table></div></div>
+      <div><h4 style="color:var(--muted); margin:4px 0;">按板块（IB 行业分类）</h4><div class="scroll" style="max-height:180px"><table id="w-sector"></table></div></div>
+    </div>
+    <div class="scroll" style="max-height:360px"><table id="w-rows"></table></div>
   </section>
   <section id="events" class="section">
     <div class="scroll"><table id="t-events"></table></div>
@@ -189,7 +196,7 @@
       <h4>一个交易日的完整流程（美东时间）</h4>
       <p>15:33 闸门判定 → 15:38 选股与预算分配 → 15:45 提交 MOC 买单（收盘价成交）→ 16:10 成交入台账 →
       挂隔夜限价卖单（IBKR 隔夜时段 20:00~次日3:50，默认 20:05）→ 挂盘前限价（默认 04:05）→
-      撤限价改 0.3% 追踪卖出（默认开盘前 10 分钟）→ 16:20 对账+日报。卖出链三个时点可在「配置 → 执行时点」按相对锚点的分钟偏移调整。<br>
+      撤限价改 0.3% 追踪卖出（默认开盘前 10 分钟）→ 午间对账（默认 11:55，固化上午成交）→ 16:20 对账+日报。卖出链时点可在「配置 → 执行时点」按相对锚点的分钟偏移调整。<br>
       没到 +1.5% 也会被追踪单在当天卖掉——<b>系统永远不留隔夜库存超过一晚</b>（除非停牌等异常，会告警）。</p>
     </div>
     <div class="help-block">
@@ -212,7 +219,8 @@
       <b>网关显示无响应？</b> 检查家中 Windows：① 隧道任务在跑吗；② Gateway 登录着吗。守护进程会持续告警直到恢复；期间自动买入会失败并播报，已挂在交易所的卖单不受影响。<br>
       <b>今晚为什么没买？</b> 看「每晚决策」：要么闸门拦截（VIX/SPY 未达标），要么可用资金低于下限，要么你按了暂停。<br>
       <b>闸门太严/太松？</b>「配置」页调 VIX 阈值：17 折中（历史约 40~75% 的晚上放行）、19 保守（约 25~50%）。<br>
-      <b>影子 T+1/T+2 是什么？</b> 每笔真实平仓后，系统自动计算"如果按 T+1/T+2 收盘强制离场会赚多少"，攒一个月数据就能用实盘对比三种出场规则（交易台账页顶部）。<br>
+      <b>候选追踪是什么？</b> 每晚把跌幅榜前 N 名（默认 20，含没买的）全部登记，次日自动回填「如果买了会怎样」：命中率、收益按名次段和板块聚合（每晚决策页），用真实数据回答"该买第几名到第几名""哪些板块的大跌不该接"。<br>
+      <b>出场价带 ⚠️估价 是什么意思？</b> 该 lot 的持仓已消失但查不到卖出成交明细（如网关重启丢记录），系统按当时行情估价入账并告警，请用 IBKR 成交记录或 Flex 报告核对修正（deploy/repair_lots.py）。<br>
       <b>怎么彻底停止系统？</b> 服务器上 <code>systemctl stop autotrader</code>；或者面板「暂停开仓」+ 手动清仓，守护进程留着继续做对账和告警。<br>
       <b>我自己在 TWS 手动挂了卖单，系统会冲突吗？</b> 不会。系统挂单前会统计该票全部在途卖单（包括你手动挂的），可卖数量=持仓−在途，不足就缩量或跳过（防超卖）；系统撤单时只撤自己打了 autotrader 标记的单，你的手动单永远不动。<br>
       <b>股票已经涨超 +1.5% 了还按目标价挂？</b> 不会。挂单前会查实时行情，市价高于目标时按市价×(1+0.1%) 跟随抬价（不超过卖一价），见配置页「跟随市场抬价」。</p>
@@ -304,7 +312,7 @@ function toast(msg, type=''){
 const TZS = {'America/New_York':'美东', 'Asia/Shanghai':'北京', 'local':'本地'};
 const EVNAMES = {gate_check:'闸门判定', build_plan:'选股与预算', submit_moc:'提交 MOC 买单',
   confirm_fills:'成交入台账', overnight_sells:'挂隔夜限价卖单', premarket_sells:'挂盘前限价卖单',
-  open_trail:'改挂追踪卖单', daily_report:'对账与日报'};
+  open_trail:'改挂追踪卖单', midday_reconcile:'午间对账', daily_report:'对账与日报'};
 const getTz = () => localStorage.getItem('displayTz') || 'America/New_York';
 function fmtTs(iso){
   const tz = getTz();
@@ -432,20 +440,11 @@ async function loadExec(){
 /* ---------- 台账 ---------- */
 let lotFilter = '全部';
 async function loadLots(){
-  const [rows, sum, sh] = await Promise.all([j('/api/lots'), j('/api/lots/summary'), j('/api/shadow/summary')]);
-  const s = sh.summary||{};
-  const tips = {
-    '出场实验: 实际':'同一批已平仓 lot 的真实盈亏合计（按你的流程：隔夜+1.5%限价→盘前限价→开盘0.3%追踪）。',
-    '影子 T+1 收盘':'同一批 lot 如果改用「次日收盘还没到+1.5%就强制卖出」规则的假想盈亏。数据自动回填。',
-    '影子 T+2 收盘':'同上，但给两天时间。攒一个月数据即可用你自己的实盘裁决三种出场规则谁更好。'
-  };
+  const [rows, sum] = await Promise.all([j('/api/lots'), j('/api/lots/summary')]);
   $('#l-cards').innerHTML = [
     ['已平仓笔数', sum.n||0, ''], ['累计已实现', fmt$(sum.pnl), ''],
     ['胜率', sum.n?Math.round(100*sum.wins/sum.n)+'%':'—', ''],
-    ['出场实验: 实际', s.n?fmt$(s.actual):'—', s.n?('同批 '+s.n+' 笔'):'积累数据中'],
-    ['影子 T+1 收盘', s.n?fmt$(s.t1):'—', ''],
-    ['影子 T+2 收盘', s.n?fmt$(s.t2):'—', ''],
-  ].map(c=>`<div class="card" data-tip="${tips[c[0]]||''}"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
+  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
   const states = ['全部', ...new Set(rows.map(r=>r.state))];
   $('#l-filters').innerHTML = states.map(st=>`<button class="btn ${st===lotFilter?'on':''}" data-f="${st}">${st}</button>`).join('');
   document.querySelectorAll('#l-filters .btn').forEach(b=>b.onclick=()=>{ lotFilter=b.dataset.f; loadLots(); });
@@ -453,8 +452,8 @@ async function loadLots(){
   table($('#t-lots'), view, [['lot_id','ID'],['symbol','代码'],['entry_date','入场'],['qty','数量'],
     ['entry_price','成本'],['target_price','目标'],
     ['state','状态','', 'FILLED已买入→OVERNIGHT隔夜卖单已挂→PREMARKET盘前限价→TRAILING追踪→CLOSED已平仓'],
-    ['exit_date','出场日'],['exit_price','出场价'],['exit_how','方式','', 'fill@xx＝按当日真实成交回填；resync＝仅对账关闭(缺成交明细)'],
-    ['pnl','盈亏','$'],['shadow_t1','影子T+1','$','若当时用T+1收盘强制离场的假想盈亏'],['shadow_t2','影子T+2','$','若当时用T+2收盘强制离场的假想盈亏']]);
+    ['exit_date','出场日'],['exit_price','出场价'],['exit_how','方式','', 'fill@xx＝按真实成交回填；resync-est＝查无成交、按行情估价（待 Flex 对账修正）'],
+    ['pnl','盈亏','$']]);
 }
 
 /* ---------- 历史 ---------- */
@@ -487,7 +486,7 @@ async function loadHistory(){
     ['hold_td','持有日'],['bucket','类别'],['pnl','盈亏','$']]);
 }
 async function loadRuns(){
-  const [rows, gh] = await Promise.all([j('/api/runs'), safeJ('/api/gate/history')]);
+  const [rows, gh, wl] = await Promise.all([j('/api/runs'), safeJ('/api/gate/history'), safeJ('/api/watchlist')]);
   if (gh && gh.dates){
     chart('vix-chart', {type:'line', data:{labels:gh.dates, datasets:[
       {label:'VIX', data:gh.vix, borderColor:'#4a90d9', borderWidth:1.5, pointRadius:0, tension:.2},
@@ -504,6 +503,22 @@ async function loadRuns(){
       options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{labels:{color:'#8b95a3'}}},
       scales:{x:{ticks:{color:'#8b95a3', maxTicksLimit:8}, grid:{display:false}},
               y:{ticks:{color:'#8b95a3', callback:v=>v+'%'}, grid:{color:'#2a323d'}}}}});
+  }
+  if (wl){
+    const ev = (wl.rows||[]).filter(r=>r.shadow_ret_pct!=null);
+    const nights = new Set((wl.rows||[]).map(r=>r.date)).size;
+    $('#w-cards').innerHTML = [
+      ['已登记', (wl.rows||[]).length+' 笔', nights+' 晚'],
+      ['已回填', ev.length+' 笔', '次日数据齐后自动回填'],
+      ['整体命中率', ev.length?Math.round(100*ev.reduce((a,r)=>a+(r.target_hit||0),0)/ev.length)+'%':'—', '次日触及 +止盈目标'],
+      ['平均收益', ev.length?(ev.reduce((a,r)=>a+r.shadow_ret_pct,0)/ev.length).toFixed(2)+'%':'—', '命中记+目标%，未命中按次日收盘'],
+    ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
+    const aggCols = [['key','分组'],['n','样本'],['bought','已买'],['hit_rate','命中率','%'],['avg_ret_pct','均收益','%']];
+    table($('#w-bucket'), wl.by_bucket||[], aggCols);
+    table($('#w-sector'), wl.by_sector||[], aggCols);
+    table($('#w-rows'), (wl.rows||[]).slice(0,120), [['date','日期'],['rank','名次'],['symbol','代码'],
+      ['sector','板块'],['change_pct','当日跌幅','%'],['bought','已买','','1=实际买入 0=仅观察'],
+      ['target_hit','命中','','次日最高触及 收盘×(1+止盈%)'],['shadow_ret_pct','影子收益','%','命中记+目标%，未命中按次日收盘计']]);
   }
   rows.forEach(r=>r.gate_pass = r.gate_pass? '✅ 放行':'⛔ 拦截');
   table($('#t-runs'), rows, [['date','日期'],['gate_pass','闸门'],
@@ -630,6 +645,7 @@ const CFG_GROUPS = [
     ['screener.n_stocks','每晚选股数','从跌幅榜选取的股票数（跳过前 N 名后取这么多只）。'],
     ['screener.skip_rank','跳过跌幅榜前 N 名','跌得最狠的第一名往往有实质利空，默认跳过 1 个。'],
     ['screener.lot_size','股数取整 (手)','买入股数向下取整到该倍数。'],
+    ['screener.watch_n','候选追踪数 (仅观察)','每晚把跌幅榜前 N 名全部登记（含没买的），次日回填结果，按名次段/板块聚合看命中率（每晚决策页）。0＝关闭。'],
     ['exits.overnight_target_pct','止盈目标 %','限价卖出目标＝成本×(1+此值%)。回测显示 1.5 与 2.0 差异在噪音内，1.5 周转最快。'],
     ['exits.trail_pct','追踪回撤 %','开盘后追踪卖出的回撤触发比例。0.3％＝价格从高点回落 0.3% 即卖出。'],
     ['exits.follow_market','跟随市场抬价','挂限价卖单前查实时行情：若市价已高于目标价，则按 市价×(1+缓冲%) 抬高挂价（不超过卖一价），避免涨了 4% 还按 +1.5% 贱卖。移植自你原来的 6/7 号脚本逻辑。'],
@@ -637,7 +653,8 @@ const CFG_GROUPS = [
   ['执行时点（分钟偏移，负=提前/正=延后）', [
     ['schedule_et.overnight_sells_offset_min','挂隔夜限价单','锚点=隔夜时段开盘 20:00 ET（前一日历日晚）。5＝20:05 挂单；-10＝19:50 提前挂（订单会等到 20:00 开盘生效）。'],
     ['schedule_et.premarket_sells_offset_min','挂盘前限价单','锚点=盘前时段开始 04:00 ET。5＝04:05 挂单。'],
-    ['schedule_et.open_trail_offset_min','改挂追踪单','锚点=开盘 09:30 ET。-10＝09:20（开盘前 10 分钟，撤限价改挂追踪，开盘即生效）；10＝09:40（开盘后 10 分钟才切换，给盘前限价多一点成交窗口）。']]],
+    ['schedule_et.open_trail_offset_min','改挂追踪单','锚点=开盘 09:30 ET。-10＝09:20（开盘前 10 分钟，撤限价改挂追踪，开盘即生效）；10＝09:40（开盘后 10 分钟才切换，给盘前限价多一点成交窗口）。'],
+    ['schedule_et.midday_reconcile_offset_min','午间对账','锚点=开盘 09:30 ET。145＝11:55。上海时区网关的成交查询窗口在 12:00 ET 翻页，此步必须在翻页前跑完，把上午的追踪单成交固化进台账，否则日报查不到。上限 148（=11:58）。']]],
   ['风控与通知', [
     ['risk.cushion_alert_pct','保证金缓冲告警线 %','可用资金/净值低于该比例时，盘中每 2 小时推一次强平预警。'],
     ['notify.heartbeat_minutes','心跳间隔 (分钟)','交易时段定时报平安的间隔；0＝关闭心跳（网关断线告警不受影响）。'],
@@ -699,8 +716,8 @@ const TOUR = [
   ['nav button[data-s="overview"]','总览页：账户四大数字、当前持仓与浮盈、净值曲线、今日自动动作时刻表。每天扫一眼这里就够了。'],
   ['#gatepill','闸门状态实时显示在顶栏：绿色=今晚会开仓，黄色=今晚拦截。鼠标停留任何元素都有详细说明。'],
   ['#pauseBtn','紧急暂停开仓在这里：停买入、不停卖出。'],
-  ['nav button[data-s="lots"]','交易台账：系统的每一笔买卖、盈亏、以及"影子出场实验"——用你自己的实盘对比三种出场规则。'],
-  ['nav button[data-s="runs"]','每晚决策：闸门为什么放行/拦截，VIX 和 SPY 的数值都在这里，方便你复盘。'],
+  ['nav button[data-s="lots"]','交易台账：系统的每一笔买卖、出场方式与盈亏，一笔买入=一个 lot。'],
+  ['nav button[data-s="runs"]','每晚决策：闸门为什么放行/拦截、VIX 和 SPY 的数值，以及候选追踪——没买的票次日表现如何，按名次和板块聚合。'],
   ['nav button[data-s="manual"]','手动操作：自动化出问题时的兜底。它不依赖守护进程，永远可用。'],
   ['nav button[data-s="config"]','配置：闸门阈值、预算、杠杆、止盈比例都可以改，改动即时生效并留痕。dry/live 也在这里切换。'],
   ['nav button[data-s="help"]','帮助页随时回来看：流程时间线、状态含义、常见问题都在这里。祝交易顺利！'],

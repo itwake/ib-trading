@@ -94,7 +94,7 @@ def index():
 def _sched_details(schedule, open_lots, snap):
     """给事件表的每一项生成精确明细: 会对哪些票、以什么价、下什么单。"""
     g, sc, b, ex = cfg["gate"], cfg["screener"], cfg["budget"], cfg["exits"]
-    limit_lots = [l for l in open_lots if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]
+    limit_lots = [l for l in open_lots if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET", "TRAILING")]
     lots_line = "、".join(f"{l['symbol']}×{l['qty']} @≥{l['target_price']}" for l in limit_lots) \
         or "（当前无待挂仓位；若今晚有新买入将一并挂单）"
     trail_line = "、".join(f"{l['symbol']}×{l['qty']}" for l in limit_lots) or "（当前无待挂仓位）"
@@ -110,7 +110,8 @@ def _sched_details(schedule, open_lots, snap):
         "overnight_sells": f"挂 OVERNIGHT 场所限价卖单（防超卖清点后，+{ex['overnight_target_pct']}% 起、市价更高则跟随抬价）：{lots_line}",
         "premarket_sells": f"盘前挂 SMART 限价卖单（outsideRth，同价规则）：{lots_line}",
         "open_trail": f"撤系统限价卖单，改挂 {ex['trail_pct']}% 追踪卖出：{trail_line}",
-        "daily_report": "与 IB 对账（回填真实卖出价与盈亏并播报）→ 净值快照 → Discord 日报 → 影子实验回填",
+        "midday_reconcile": "午间对账：固化上午成交并回填平仓（上海时区网关的成交查询窗口 12:00 ET 翻页，须赶在此前）",
+        "daily_report": "与 IB 对账（回填真实卖出价与盈亏并播报）→ 净值快照 → Discord 日报 → 分钟线存档 → 候选追踪回填",
     }
     for ev in schedule:
         ev["detail"] = det.get(ev["name"], "")
@@ -307,6 +308,7 @@ EDITABLE = {
     "screener.n_stocks": ("int", 1, 20),
     "screener.skip_rank": ("int", 0, 10),
     "screener.lot_size": ("int", 1, 100),
+    "screener.watch_n": ("int", 0, 50),
     "budget.nightly_max_usd": ("num", 0, 1000000),
     "budget.gross_max_x_netliq": ("num", 0, 4),
     "budget.min_available_funds_usd": ("num", 0, 1000000),
@@ -318,6 +320,7 @@ EDITABLE = {
     "schedule_et.overnight_sells_offset_min": ("num", -30, 220),
     "schedule_et.premarket_sells_offset_min": ("num", -30, 300),
     "schedule_et.open_trail_offset_min": ("num", -60, 180),
+    "schedule_et.midday_reconcile_offset_min": ("num", 30, 148),
     "risk.cushion_alert_pct": ("num", 1, 50),
     "notify.heartbeat_minutes": ("int", 0, 1440),
     "notify.discord_webhook": ("str",),
@@ -539,7 +542,8 @@ async def action_flatten():
 
 EV_ACT = {"gate_check": "闸门判定", "build_plan": "选股与预算", "submit_moc": "提交 MOC 买单",
           "confirm_fills": "成交入台账", "overnight_sells": "挂隔夜限价卖单",
-          "premarket_sells": "挂盘前限价卖单", "open_trail": "改挂追踪卖单", "daily_report": "对账与日报"}
+          "premarket_sells": "挂盘前限价卖单", "open_trail": "改挂追踪卖单",
+          "midday_reconcile": "午间对账", "daily_report": "对账与日报"}
 ORDER_ACT = {"MOC_BUY": "提交 MOC 买单", "OVERNIGHT_SELL": "挂隔夜限价卖单",
              "PREMARKET_SELL": "挂盘前限价卖单", "TRAIL_SELL": "挂追踪卖单"}
 
@@ -551,7 +555,7 @@ def timeline(limit: int = 400):
     today = now.date()
     target = today if cal.is_trading_day(today) else cal.next_trading_day(today)
     open_lots = q("SELECT * FROM lots WHERE state NOT IN ('CLOSED','ERROR') ORDER BY lot_id")
-    limit_lots = [l for l in open_lots if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]
+    limit_lots = [l for l in open_lots if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET", "TRAILING")]
     snap = q("SELECT * FROM snapshots ORDER BY date DESC LIMIT 1")
     g, sc, b, ex = cfg["gate"], cfg["screener"], cfg["budget"], cfg["exits"]
     est = None
@@ -656,14 +660,42 @@ def gate_history(days: int = 180):
     return cached("gate_hist", 3600, build)
 
 
-@app.get("/api/shadow/summary")
-def shadow_summary():
-    """实盘出场 vs 影子 T+1/T+2 收盘的同批对比。"""
-    rows = q("SELECT COUNT(*) n, ROUND(SUM(pnl),0) actual, ROUND(SUM(shadow_t1),0) t1,"
-             " ROUND(SUM(shadow_t2),0) t2 FROM lots WHERE shadow_t1 IS NOT NULL")
-    detail = q("SELECT lot_id, symbol, entry_date, pnl, shadow_t1, shadow_t2 FROM lots"
-               " WHERE shadow_t1 IS NOT NULL ORDER BY lot_id DESC LIMIT 100")
-    return {"summary": rows[0] if rows else {}, "detail": detail}
+@app.get("/api/watchlist")
+def watchlist(days: int = 60):
+    """候选追踪: 每晚跌幅榜前 N 名 (含未买入) 的次日结果, 按名次段/板块聚合。"""
+    try:
+        rows = q("SELECT * FROM watchlist WHERE date >= date('now', ?) ORDER BY date DESC, rank",
+                 (f"-{int(days)} day",))
+    except Exception:
+        rows = []
+    sc = cfg["screener"]
+    skip, n = sc.get("skip_rank", 1), sc.get("n_stocks", 10)
+
+    def bucket(r):
+        if r["rank"] <= skip:
+            return f"1.榜首前{skip}名(跳过)"
+        if r["rank"] <= skip + n:
+            return f"2.买入区(第{skip + 1}~{skip + n}名)"
+        return f"3.观察区(第{skip + n + 1}名起)"
+
+    def agg(key_fn):
+        m = {}
+        for r in rows:
+            if r.get("shadow_ret_pct") is None:
+                continue
+            a = m.setdefault(key_fn(r), {"n": 0, "hit": 0, "ret": 0.0, "bought": 0})
+            a["n"] += 1
+            a["hit"] += r["target_hit"] or 0
+            a["ret"] += r["shadow_ret_pct"]
+            a["bought"] += r["bought"] or 0
+        return [{"key": k, "n": v["n"], "bought": v["bought"],
+                 "hit_rate": round(100 * v["hit"] / v["n"]),
+                 "avg_ret_pct": round(v["ret"] / v["n"], 2)}
+                for k, v in sorted(m.items())]
+
+    return {"rows": rows[:400], "by_bucket": agg(bucket),
+            "by_sector": sorted(agg(lambda r: r["sector"] or "未知"),
+                                key=lambda x: -x["n"])[:15]}
 
 
 @app.get("/api/history/summary")

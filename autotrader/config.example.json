@@ -7,7 +7,8 @@
     "proxy": "http://192.168.8.150:7890",
     "skip_rank": 1,
     "n_stocks": 10,
-    "lot_size": 2
+    "lot_size": 2,
+    "watch_n": 20
   },
   "budget": {
     "nightly_max_usd": 20000,
@@ -25,10 +26,11 @@
     "leftover_policy": "alert"
   },
   "schedule_et": {
-    "_说明": "卖出链时点=分钟偏移, 负数提前/正数延后。锚点: overnight=隔夜开盘20:00ET, premarket=盘前开始04:00ET, open_trail=开盘09:30ET。买入链锚定收盘自动计算, 不可配。",
+    "_说明": "卖出链时点=分钟偏移, 负数提前/正数延后。锚点: overnight=隔夜开盘20:00ET, premarket=盘前开始04:00ET, open_trail/midday_reconcile=开盘09:30ET。买入链锚定收盘自动计算, 不可配。",
     "overnight_sells_offset_min": 5,
     "premarket_sells_offset_min": 5,
-    "open_trail_offset_min": -10
+    "open_trail_offset_min": -10,
+    "midday_reconcile_offset_min": 145
   },
   "risk": { "cushion_alert_pct": 12 },
   "notify": { "discord_webhook": "", "heartbeat_minutes": 60 },

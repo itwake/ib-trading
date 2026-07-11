@@ -63,7 +63,27 @@ class Engine:
         self.notify.send(f"[{d}] 买入计划({src}) 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
         self._earnings_watch(d)  # 仅观察不过滤 (2026-07-06 决定: 样本 21 笔不足以立规则)
         self.db.record_run(str(d), True, 0, 0, len(self.plan), budget, "plan built")
+        try:  # 候选追踪: 跌幅榜前 watch_n 名全部登记 (含未买入), 次日回填结果
+            await self._record_watchlist(d, candidates)
+        except Exception as e:
+            log.warning("候选追踪登记失败: %s", e)
         return bool(self.plan)
+
+    async def _record_watchlist(self, d, candidates):
+        n = int(self.cfg["screener"].get("watch_n", 20))  # 0=关闭
+        if n <= 0:
+            return
+        bought = {t for t, _s, _p in self.plan}
+        rows = []
+        for i, (t, chg) in enumerate(candidates[:n], start=1):
+            sec = self.db.get_sector(t)
+            if sec is None:
+                sec = await self.broker.sector_of(t)
+                self.db.set_sector(t, sec)
+            rows.append((str(d), i, t, sec or "", chg, 1 if t in bought else 0))
+        if rows:
+            self.db.add_watch(rows)
+            log.info("[%s] 候选追踪登记 %d 名 (其中买入 %d)", d, len(rows), sum(r[5] for r in rows))
 
     def _earnings_watch(self, d):
         """观察性标记: 计划里哪些票在持仓期内(今晚AMC/明晨BMO)发布财报。只播报留痕, 不拦截。"""
@@ -95,8 +115,22 @@ class Engine:
             ok += 1
         self.notify.send(f"[{d}] 已提交 {ok}/{len(self.plan)} 个 MOC 买单")
 
+    def _persist_fills(self, fills):
+        """所有成交按 execId 固化进 fills 表 (跨会话累积)。reqExecutions 只返回网关时区
+        '当日午夜以来'的成交, 上海时区网关的午夜=12:00 ET, 上午的成交过午即不可见——
+        固化后对账不再依赖单次查询窗口。"""
+        for f in fills:
+            e = f.execution
+            try:
+                ts = e.time.astimezone(now_et().tzinfo).isoformat(timespec="seconds")
+            except Exception:
+                ts = now_et().isoformat(timespec="seconds")
+            self.db.record_fill(e.execId, ts, f.contract.symbol, e.side,
+                                float(e.shares), float(e.price))
+
     async def do_confirm_fills(self, d):
         fills = await self.broker.todays_fills()
+        self._persist_fills(fills)
         target_mult = 1 + self.cfg["exits"]["overnight_target_pct"] / 100
         n = 0
         for f in fills:
@@ -141,8 +175,9 @@ class Engine:
     async def do_overnight_sells(self, d):
         lines, skips = [], []
         ctx = await self.broker.sell_context()
+        # 含 TRAILING: 当日追踪单未成交 (tif=DAY 收盘作废) 的 lot 由隔夜单重新接管, 防孤儿仓
         for lot in self.db.open_lots():
-            if lot["state"] not in ("FILLED", "OVERNIGHT"):
+            if lot["state"] not in ("FILLED", "OVERNIGHT", "TRAILING"):
                 continue
             line = await self._staged_sell(lot, self.broker.sell_overnight, "OVERNIGHT_SELL", ctx, skips)
             if line:
@@ -157,7 +192,7 @@ class Engine:
         await self._resync_lots_with_positions("盘前")
         lines, skips = [], []
         ctx = await self.broker.sell_context()
-        for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT")]:
+        for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "TRAILING")]:
             line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL", ctx, skips)
             if line:
                 self.db.set_lot_state(lot["lot_id"], "PREMARKET")
@@ -207,43 +242,126 @@ class Engine:
         self.notify.send(msg)
         self.db.snapshot(str(d), acct["NetLiquidation"], acct["TotalCashValue"],
                          acct["GrossPositionValue"], acct["AvailableFunds"], len(pos), realized)
-        try:
-            from shadow import evaluate_shadows
-            evaluate_shadows(self.db, self.notify)
+        try:  # 观测1: 当日持有/平仓标的的 1 分钟K线, 供开盘卖出时机复盘
+            await self._capture_minute_bars(d)
         except Exception as e:
-            log.warning("影子实验失败: %s", e)
+            log.warning("分钟线抓取失败: %s", e)
+        try:  # 观测2: 回填历史候选 (含未买入) 的次日结果
+            self._eval_watchlist(d)
+        except Exception as e:
+            log.warning("候选追踪回填失败: %s", e)
+
+    async def _capture_minute_bars(self, d):
+        import json
+        syms = self.db.symbols_for_bars(str(d))
+        n = 0
+        for sym in syms:
+            try:
+                bars = await self.broker.minute_bars(sym)
+                if bars:
+                    self.db.save_minute_bars(str(d), sym, json.dumps(bars, separators=(",", ":")))
+                    n += 1
+            except Exception as e:
+                log.warning("分钟线失败 %s: %s", sym, e)
+        if n:
+            log.info("[%s] 分钟线已存 %d/%d 只", d, n, len(syms))
+
+    def _eval_watchlist(self, d):
+        """用日线回填候选的次日结果。口径与实盘近似: 次日最高触及 收盘×(1+目标%) 记为
+        止盈命中(+目标%), 否则按次日收盘价计算收益。"""
+        rows = self.db.watch_pending(str(d))
+        if not rows:
+            return
+        import yfinance as yf
+        syms = sorted({r["symbol"] for r in rows})
+        start = min(r["date"] for r in rows)
+        df = yf.download(syms, start=start, progress=False, auto_adjust=False, group_by="ticker")
+        tgt_pct = self.cfg["exits"]["overnight_target_pct"]
+        done = 0
+        for r in rows:
+            try:
+                sub = df[r["symbol"]] if len(syms) > 1 else df
+                sub = sub.dropna(subset=["Close"])
+                dates = [str(x.date()) for x in sub.index]
+                if r["date"] not in dates:
+                    continue
+                i = dates.index(r["date"])
+                if i + 1 >= len(sub):
+                    continue  # 次日数据未出, 下次再算
+                entry_close = float(sub["Close"].iloc[i])
+                nxt = sub.iloc[i + 1]
+                hit = 1 if float(nxt["High"]) >= entry_close * (1 + tgt_pct / 100) else 0
+                ret = tgt_pct if hit else (float(nxt["Close"]) / entry_close - 1) * 100
+                self.db.set_watch_outcome(r["date"], r["symbol"], round(entry_close, 4),
+                                          float(nxt["Open"]), float(nxt["High"]),
+                                          float(nxt["Close"]), hit, round(ret, 2))
+                done += 1
+            except Exception as e:
+                log.warning("候选回填失败 %s %s: %s", r["date"], r["symbol"], e)
+        if done:
+            log.info("[%s] 候选追踪回填 %d 笔", d, done)
 
     async def _resync_lots_with_positions(self, tag):
-        """以 IB 实际持仓为准核对台账: 已清仓的 lot 用当日卖出成交回填真实出场价与盈亏。"""
+        """以 IB 实际持仓为准核对台账。成交先固化进 fills 表, 平仓价优先用累积成交回填;
+        查不到成交时用行情价估算 (exit_how=resync-est, 待 Flex 对账修正), 绝不以 0 价记账。
+        同票多 lot 且持仓少于台账时按 FIFO 关旧 lot (幽灵仓自愈)。"""
         try:
             pos = {p.contract.symbol: p.position for p in await self.broker.positions()}
             fills = await self.broker.todays_fills()
         except Exception as e:
             log.warning("对账失败(%s): %s", tag, e)
             return
-        sells = {}
-        for f in fills:
-            e, c = f.execution, f.contract
-            if e.side == "SLD":
-                q0, cash0 = sells.get(c.symbol, (0.0, 0.0))
-                sells[c.symbol] = (q0 + e.shares, cash0 + e.shares * e.price)
-        if not pos and not sells and self.db.open_lots():
-            log.warning("对账(%s): 持仓快照为空且无卖出成交, 疑似数据竞态, 跳过本次对账", tag)
-            return
-        closed_msgs = []
-        for lot in self.db.open_lots():
-            if pos.get(lot["symbol"], 0) > 0:
+        self._persist_fills(fills)
+        open_ = self.db.open_lots()
+        # 持仓快照空且当次查询无成交 = 可能是 reqPositions 竞态返回空。此时仍允许用
+        # fills 表里已固化的真实成交回填 (如午间抓到、日报窗口翻页的场景), 但禁用行情估价,
+        # 防止把其实还在的持仓整批按估价关掉。
+        race_suspect = not pos and not fills and bool(open_)
+        if race_suspect:
+            log.warning("对账(%s): 持仓快照为空且无成交, 疑似数据竞态, 仅按已固化成交回填", tag)
+        by_sym = {}
+        for lot in open_:
+            by_sym.setdefault(lot["symbol"], []).append(lot)
+        closed_msgs, today = [], str(now_et().date())
+        for sym, lots in sorted(by_sym.items()):
+            deficit = sum(l["qty"] for l in lots) - int(pos.get(sym, 0))
+            if deficit <= 0:
                 continue
-            q, cash = sells.get(lot["symbol"], (0.0, 0.0))
-            exit_px = cash / q if q else 0.0
-            pnl = (exit_px - lot["entry_price"]) * lot["qty"] - 2.0 if exit_px else 0.0
-            self.db.close_lot(lot["lot_id"], str(now_et().date()), round(exit_px, 4),
-                              f"fill@{tag}" if exit_px else f"resync@{tag}", round(pnl, 2))
-            if exit_px:
+            # 卖出价 = 覆盖缺口股数的最近卖出成交 vwap (只取最早未平 lot 入场收盘之后的)
+            since = min(l["entry_date"] for l in lots) + "T16:00"
+            q, cash = self.db.recent_sells(sym, deficit, since)
+            vwap = cash / q if q else None
+            for lot in sorted(lots, key=lambda l: l["lot_id"]):  # FIFO: 旧 lot 先出
+                if deficit < lot["qty"]:
+                    if deficit > 0:
+                        self.notify.send(f"对账({tag}): {sym} 持仓比台账少 {deficit} 股, "
+                                         f"不足 lot{lot['lot_id']} 整手, 请人工核对", "warn")
+                    break
+                if vwap:
+                    exit_px, how = vwap, f"fill@{tag}"
+                elif race_suspect:
+                    break  # 无成交佐证 + 持仓快照可疑: 不动, 等下次对账
+                else:
+                    c = await self.broker.qualify(sym)
+                    _, _, last = await self.broker.market_ref(c) if c else (None, None, None)
+                    if not last:
+                        self.notify.send(f"对账({tag}): {sym} lot{lot['lot_id']} 持仓已消失但查无成交"
+                                         f"且无行情可估价, 保留待查", "critical")
+                        break
+                    exit_px, how = last, f"resync-est@{tag}"
+                pnl = (exit_px - lot["entry_price"]) * lot["qty"] - 2.0
+                self.db.close_lot(lot["lot_id"], today, round(exit_px, 4), how, round(pnl, 2))
                 pct = (exit_px / lot["entry_price"] - 1) * 100
-                closed_msgs.append(f"{lot['symbol']} x{lot['qty']} @{exit_px:.2f} ({pct:+.2f}%, ${pnl:+,.0f})")
+                est = " ⚠️估价" if how.startswith("resync-est") else ""
+                closed_msgs.append(f"{sym} x{lot['qty']} @{exit_px:.2f} ({pct:+.2f}%, ${pnl:+,.0f}){est}")
+                deficit -= lot["qty"]
         if closed_msgs:
             self.notify.send("已平仓:\n" + "\n".join(closed_msgs))
+
+    async def do_midday_reconcile(self, d):
+        """午间对账: 赶在网关时区(上海)的午夜=12:00 ET 之前, 把上午的追踪单成交固化进
+        fills 表并回填平仓, 否则 16:20 日报的 reqExecutions 已看不到这些成交。"""
+        await self._resync_lots_with_positions("午间")
 
     # ---------- 主循环 ----------
     ACTIONS = {
@@ -254,12 +372,14 @@ class Engine:
         "overnight_sells": "do_overnight_sells",
         "premarket_sells": "do_premarket_sells",
         "open_trail": "do_open_trail",
+        "midday_reconcile": "do_midday_reconcile",
         "daily_report": "do_daily_report",
     }
 
     # 事件错过后仍值得补执行的时间窗 (秒)。买入链严格准时 (MOC 有截止), 卖出链宽容自愈。
     GRACE = {"overnight_sells": 7 * 3600, "premarket_sells": 5 * 3600, "open_trail": 6 * 3600,
-             "confirm_fills": 4 * 3600, "daily_report": 12 * 3600, "submit_moc": 120}
+             "midday_reconcile": 2 * 3600, "confirm_fills": 4 * 3600, "daily_report": 12 * 3600,
+             "submit_moc": 120}
 
     async def run_day(self, d, from_now_only=True):
         """执行交易日 d 的事件表。买入链在闸门拦截时跳过, 卖出链始终执行 (照顾已有持仓)。"""
