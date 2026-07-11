@@ -28,6 +28,7 @@ def parse_flex(path):
             qty = get("Quantity", "Qty")
             px = get("TradePrice", "T. Price", "Price", "TradeMoney")
             dt = get("Date/Time", "DateTime", "TradeDate", "Date")
+            trade_date = get("TradeDate") or dt
             if not sym or not qty or not px:
                 continue
             try:
@@ -35,9 +36,11 @@ def parse_flex(path):
             except ValueError:
                 continue
             if side.startswith("S") or q < 0:  # SELL 或 Flex 负数量表示卖出
-                d = dt[:10].replace("/", "-")
+                d = trade_date.split(";")[0][:10].replace("/", "-")
                 if len(d) == 8 and d.isdigit():  # 20260709 -> 2026-07-09
                     d = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                if len(d) != 10:
+                    continue  # 无法识别的日期格式, 宁可跳过也不错配
                 sells.append((sym, d, abs(q), p, dt))
     sells.sort(key=lambda r: r[4])
     return sells
