@@ -73,17 +73,30 @@ class Engine:
         n = int(self.cfg["screener"].get("watch_n", 20))  # 0=关闭
         if n <= 0:
             return
+        from sectors import resolve_sector
         bought = {t for t, _s, _p in self.plan}
         rows = []
         for i, (t, chg) in enumerate(candidates[:n], start=1):
             sec = self.db.get_sector(t)
-            if sec is None:
-                sec = await self.broker.sector_of(t)
-                self.db.set_sector(t, sec)
+            if not sec:  # None(未查过) 或 ''(上次没取到): 重试, 只缓存非空结果
+                got = resolve_sector(t)
+                if got:
+                    self.db.set_sector(t, got)
+                sec = got
             rows.append((str(d), i, t, sec or "", chg, 1 if t in bought else 0))
         if rows:
             self.db.add_watch(rows)
             log.info("[%s] 候选追踪登记 %d 名 (其中买入 %d)", d, len(rows), sum(r[5] for r in rows))
+
+    def _ensure_sectors(self, symbols):
+        """给一批 symbol 补全板块 (缓存进 sectors 表), 供台账/历史/持仓表显示。
+        在 daily_report 里对当日持有/平仓标的调用, 兜住 watch_n=0 时买入票没板块的情况。"""
+        from sectors import resolve_sector
+        for s in symbols:
+            if not self.db.get_sector(s):
+                got = resolve_sector(s)
+                if got:
+                    self.db.set_sector(s, got)
 
     def _earnings_watch(self, d):
         """观察性标记: 计划里哪些票在持仓期内(今晚AMC/明晨BMO)发布财报。只播报留痕, 不拦截。"""
@@ -242,6 +255,10 @@ class Engine:
         self.notify.send(msg)
         self.db.snapshot(str(d), acct["NetLiquidation"], acct["TotalCashValue"],
                          acct["GrossPositionValue"], acct["AvailableFunds"], len(pos), realized)
+        try:  # 板块补全: 当日持有/平仓标的, 兜住 watch_n=0 的买入票
+            self._ensure_sectors(self.db.symbols_for_bars(str(d)))
+        except Exception as e:
+            log.warning("板块补全失败: %s", e)
         try:  # 观测1: 当日持有/平仓标的的 1 分钟K线, 供开盘卖出时机复盘
             await self._capture_minute_bars(d)
         except Exception as e:

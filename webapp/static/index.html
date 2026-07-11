@@ -243,6 +243,10 @@ const $ = s => document.querySelector(s);
 const fmt$ = v => (v==null?'—':(v<0?'-':'')+'$'+Math.abs(Math.round(v)).toLocaleString());
 const cls = v => v>0?'pos':(v<0?'neg':'');
 const charts = {};
+let SECTORS = {};
+const secOf = s => SECTORS[s] || '—';
+const withSec = rows => rows.map(r=>({...r, sector: r.sector || secOf(r.symbol)}));
+async function loadSectors(){ SECTORS = (await safeJ('/api/sectors')) || {}; }
 function chart(id, cfg){ if(charts[id]) charts[id].destroy(); charts[id]=new Chart($('#'+id), cfg); }
 function table(el, rows, cols) {
   if (!rows.length) { el.innerHTML = '<tr><td style="color:var(--muted)">暂无数据</td></tr>'; return; }
@@ -389,9 +393,9 @@ async function loadOverview(){
     ['最近闸门', r.date?(r.gate_pass?'放行':'拦截'):'—', r.date||''],
     ['闸门规则', 'VIX≥'+o.gate_cfg.vix_min+' 或 SPY≤'+o.gate_cfg.spy_max_pct+'%', ''],
   ].map(c=>`<div class="card" data-tip="${tips[c[0]]||''}"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
-  table($('#ov-lots'), qt&&qt.quotes?qt.quotes:o.open_lots, qt&&qt.quotes?
-    [['symbol','代码'],['qty','数量'],['entry_price','成本'],['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]:
-    [['symbol','代码'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态','', '状态含义见「帮助」页：FILLED已买入→OVERNIGHT隔夜卖单→PREMARKET盘前→TRAILING追踪→CLOSED已平']]);
+  table($('#ov-lots'), withSec(qt&&qt.quotes?qt.quotes:o.open_lots), qt&&qt.quotes?
+    [['symbol','代码'],['sector','板块','','GICS 板块，数据自动补全'],['qty','数量'],['entry_price','成本'],['last','现价'],['pct','浮动','%'],['unrealized','盈亏','$'],['target_price','目标']]:
+    [['symbol','代码'],['sector','板块','','GICS 板块，数据自动补全'],['qty','数量'],['entry_price','成本'],['target_price','目标'],['state','状态','', '状态含义见「帮助」页：FILLED已买入→OVERNIGHT隔夜卖单→PREMARKET盘前→TRAILING追踪→CLOSED已平']]);
   $('#ov-day').textContent = '('+o.target_day+') 明细见「执行记录」页';
   $('#ov-sched').innerHTML = '<tr><th>时间</th><th>动作</th></tr>' + o.schedule.map(ev=>
     `<tr><td>${ev.iso?fmtTs(ev.iso):ev.ts}</td><td>${EVNAMES[ev.name]||ev.name}</td></tr>`).join('');
@@ -413,16 +417,18 @@ function evRow(r, isFuture){
   const BADGE = {done:'✅', skipped:'⏭', error:'❌', gate_pass:'✅ 放行', gate_block:'⛔ 拦截'};
   const st = isFuture ? '<span class="pill" style="color:var(--blue);border-color:var(--blue);font-size:11px;">待执行</span>'
                       : (BADGE[r.status]||'✅');
+  const sec = (r.symbol && r.symbol!=='—' && r.symbol!=='市场' && r.symbol!=='待选股' && r.symbol!=='待选') ? secOf(r.symbol) : '';
   return `<tr>
     <td style="vertical-align:top;">${r.iso?fmtTs(r.iso):'—'}</td>
     <td style="vertical-align:top;">${st}</td>
     <td style="vertical-align:top; font-weight:500;">${r.act}</td>
     <td style="vertical-align:top;">${r.symbol||'—'}</td>
+    <td style="vertical-align:top; color:var(--muted); font-size:12px;">${sec||'—'}</td>
     <td style="vertical-align:top;">${r.qty??'—'}</td>
     <td style="vertical-align:top;">${r.price??'—'}</td>
     <td style="white-space:normal; font-size:12px; color:var(--muted); line-height:1.6;">${r.note||''}</td></tr>`;
 }
-const EV_HEAD = '<tr><th style="width:130px;">时间</th><th style="width:80px;">状态</th><th style="width:140px;">动作</th><th style="width:70px;">标的</th><th style="width:60px;">数量</th><th style="width:110px;">价格</th><th>说明</th></tr>';
+const EV_HEAD = '<tr><th style="width:130px;">时间</th><th style="width:80px;">状态</th><th style="width:140px;">动作</th><th style="width:70px;">标的</th><th style="width:90px;">板块</th><th style="width:60px;">数量</th><th style="width:110px;">价格</th><th>说明</th></tr>';
 async function loadExec(){
   const d = await safeJ('/api/timeline');
   if (!d){
@@ -432,9 +438,9 @@ async function loadExec(){
   }
   $('#ex-day').textContent = '（交易日 '+d.target_day+'，共 '+d.future.length+' 条）';
   $('#ex-plan').innerHTML = EV_HEAD + (d.future.map(r=>evRow(r,true)).join('')
-    || '<tr><td colspan="7" style="color:var(--muted)">今日事件已全部执行完毕</td></tr>');
+    || '<tr><td colspan="8" style="color:var(--muted)">今日事件已全部执行完毕</td></tr>');
   $('#ex-hist').innerHTML = EV_HEAD + (d.past.map(r=>evRow(r,false)).join('')
-    || '<tr><td colspan="7" style="color:var(--muted)">暂无历史事件——每张挂单、每笔成交都会逐条记录在这里</td></tr>');
+    || '<tr><td colspan="8" style="color:var(--muted)">暂无历史事件——每张挂单、每笔成交都会逐条记录在这里</td></tr>');
 }
 
 /* ---------- 台账 ---------- */
@@ -448,8 +454,8 @@ async function loadLots(){
   const states = ['全部', ...new Set(rows.map(r=>r.state))];
   $('#l-filters').innerHTML = states.map(st=>`<button class="btn ${st===lotFilter?'on':''}" data-f="${st}">${st}</button>`).join('');
   document.querySelectorAll('#l-filters .btn').forEach(b=>b.onclick=()=>{ lotFilter=b.dataset.f; loadLots(); });
-  const view = lotFilter==='全部'?rows:rows.filter(r=>r.state===lotFilter);
-  table($('#t-lots'), view, [['lot_id','ID'],['symbol','代码'],['entry_date','入场'],['qty','数量'],
+  const view = withSec(lotFilter==='全部'?rows:rows.filter(r=>r.state===lotFilter));
+  table($('#t-lots'), view, [['lot_id','ID'],['symbol','代码'],['sector','板块','','GICS 板块，数据自动补全'],['entry_date','入场'],['qty','数量'],
     ['entry_price','成本'],['target_price','目标'],
     ['state','状态','', 'FILLED已买入→OVERNIGHT隔夜卖单已挂→PREMARKET盘前限价→TRAILING追踪→CLOSED已平仓'],
     ['exit_date','出场日'],['exit_price','出场价'],['exit_how','方式','', 'fill@xx＝按真实成交回填；resync-est＝查无成交、按行情估价（待 Flex 对账修正）'],
@@ -482,7 +488,7 @@ async function loadHistory(){
       scales:{x:{ticks:{color:'#8b95a3'}, grid:{display:false}},
               y:{ticks:{color:'#8b95a3', callback:v=>'$'+v}, grid:{color:'#2a323d'}}}}});
   }
-  table($('#t-history'), await j('/api/history'), [['symbol','代码'],['entry_date','入场'],['last_date','出场'],
+  table($('#t-history'), withSec(await j('/api/history')), [['symbol','代码'],['sector','板块','','GICS 板块，数据自动补全'],['entry_date','入场'],['last_date','出场'],
     ['hold_td','持有日'],['bucket','类别'],['pnl','盈亏','$']]);
 }
 async function loadRuns(){
@@ -523,7 +529,8 @@ async function loadRuns(){
   rows.forEach(r=>r.gate_pass = r.gate_pass? '✅ 放行':'⛔ 拦截');
   table($('#t-runs'), rows, [['date','日期'],['gate_pass','闸门'],
     ['vix','VIX','', '当晚判定时的 VIX 值；≥阈值即放行'],['spy_pct','SPY%','', '当晚判定时 SPY 的当日涨跌；≤阈值即放行'],
-    ['n_planned','计划数'],['budget','预算'],['note','备注']]);
+    ['n_planned','计划数'],['budget','预算'],
+    ['sectors','买入板块','','当晚实际买入标的的 GICS 板块构成（板块×只数）'],['note','备注']]);
 }
 async function loadEvents(){
   const rows = await j('/api/events');
@@ -598,8 +605,8 @@ async function loadManual(){
   const rows = o.open_lots;
   if (!rows.length){ $('#m-lots').innerHTML='<tr><td style="color:var(--muted)">无未平仓位</td></tr>'; }
   else {
-    $('#m-lots').innerHTML = '<tr><th>lot</th><th>代码</th><th>数量</th><th>成本</th><th>目标</th><th>状态</th><th>操作</th></tr>'+
-      rows.map(r=>`<tr><td>${r.lot_id}</td><td>${r.symbol}</td><td>${r.qty}</td><td>${r.entry_price}</td>
+    $('#m-lots').innerHTML = '<tr><th>lot</th><th>代码</th><th>板块</th><th>数量</th><th>成本</th><th>目标</th><th>状态</th><th>操作</th></tr>'+
+      rows.map(r=>`<tr><td>${r.lot_id}</td><td>${r.symbol}</td><td style="color:var(--muted);font-size:12px;">${secOf(r.symbol)}</td><td>${r.qty}</td><td>${r.entry_price}</td>
         <td>${r.target_price}</td><td>${r.state}</td><td style="display:flex;gap:4px;">
         <button class="btn" data-tip="按目标价挂限价卖单（先撤该票在途卖单）" onclick="sellLot(${r.lot_id},'limit','${r.symbol}')">限价卖</button>
         <button class="btn" data-tip="挂 0.3% 追踪卖单：从最高点回落 0.3% 成交（先撤在途卖单）" onclick="sellLot(${r.lot_id},'trail','${r.symbol}')">追踪卖</button>
@@ -744,12 +751,12 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   b.classList.add('active'); $('#'+b.dataset.s).classList.add('active');
   loaders[b.dataset.s]();
 });
-loadOverview();
+loadSectors().then(loadOverview);
 if (!localStorage.getItem('tourDone')){
   localStorage.setItem('tourDone','1');
   setTimeout(()=>{ modal({title:'欢迎使用 ib-trading 面板', body:'第一次使用？建议先花一分钟跟着新手引导过一遍（也可以稍后在「帮助」页启动）。', okText:'开始引导', cancelText:'稍后再说'}).then(ok=>{ if(ok) $('#tour-btn').click(); }); }, 800);
 }
-setInterval(()=>{ const cur=document.querySelector('nav button.active').dataset.s; if (cur!=='help'&&cur!=='config'&&cur!=='manual') loaders[cur](); }, 60000);
+setInterval(async ()=>{ const cur=document.querySelector('nav button.active').dataset.s; if (cur!=='help'&&cur!=='config'&&cur!=='manual'){ await loadSectors(); loaders[cur](); } }, 60000);
 </script>
 </body>
 </html>

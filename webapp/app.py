@@ -146,9 +146,30 @@ def lots(limit: int = 200):
     return q("SELECT * FROM lots ORDER BY lot_id DESC LIMIT ?", (limit,))
 
 
+@app.get("/api/sectors")
+def sectors_map():
+    """{symbol: 板块} 映射, 供前端给所有含代码的表补板块列。"""
+    try:
+        return {r["symbol"]: r["sector"] for r in q("SELECT symbol, sector FROM sectors") if r["sector"]}
+    except Exception:
+        return {}
+
+
 @app.get("/api/runs")
 def runs(limit: int = 90):
-    return q("SELECT * FROM nightly_runs ORDER BY date DESC LIMIT ?", (limit,))
+    rows = q("SELECT * FROM nightly_runs ORDER BY date DESC LIMIT ?", (limit,))
+    try:  # 每晚实际买入标的的板块构成
+        secs = q("SELECT l.entry_date d, COALESCE(NULLIF(s.sector,''),'未知') sector, COUNT(*) n"
+                 " FROM lots l LEFT JOIN sectors s ON l.symbol=s.symbol GROUP BY l.entry_date, sector")
+        by_date = {}
+        for r in secs:
+            by_date.setdefault(r["d"], []).append((r["sector"], r["n"]))
+        for r in rows:
+            lst = sorted(by_date.get(r["date"], []), key=lambda x: -x[1])
+            r["sectors"] = "、".join(f"{s}×{n}" for s, n in lst) or "—"
+    except Exception:
+        pass
+    return rows
 
 
 @app.get("/api/snapshots")
