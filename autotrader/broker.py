@@ -196,12 +196,16 @@ class Broker:
         return self._send(got[0], o, "隔夜限价卖")
 
     async def sell_premarket(self, symbol, qty, limit_price):
-        """盘前 (04:00-09:30): SMART 限价 + outsideRth。"""
+        """盘前 (04:00-09:30): SMART 限价 + outsideRth。
+        usePriceMgmtAlgo 同 TWS 手动下单默认: 限价若触发 IB 价格过滤 (偏离参考价过远,
+        如隔夜大跳空后按旧目标价挂单), 由 IB 托管缓释价格而不是直接拒单。
+        仅对 SMART 路由有意义, OVERNIGHT 直连场所与 MOC 竞价单不适用。"""
         c = await self.qualify(symbol)
         if not c:
             return None
         o = LimitOrder("SELL", qty, round_tick(limit_price), tif="DAY")
         o.outsideRth = True
+        o.usePriceMgmtAlgo = True
         return self._send(c, o, "盘前限价卖")
 
     async def sell_market(self, symbol, qty):
