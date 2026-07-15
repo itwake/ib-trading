@@ -2,6 +2,7 @@
 """选股与买入计划: Finviz 筛选 -> IB 校验价格 -> 平均分配。
 移植自 the-trading 1/2/3 号脚本, 合并为一个函数。"""
 import logging
+import re
 
 import requests
 from bs4 import BeautifulSoup
@@ -28,15 +29,31 @@ def fetch_finviz(cfg):
     c_i = next(i for i, h in enumerate(header) if h.lower() == "change")
     rows = []
     for tr in table.find_all("tr")[1:]:
-        tds = [td.get_text(strip=True) for td in tr.find_all("td")]
+        cells = tr.find_all("td")
+        tds = [td.get_text(strip=True) for td in cells]
         if not tds or not tds[0].isdigit():
             continue
         try:
             chg = float(tds[c_i].replace("%", ""))
         except ValueError:
             continue
-        rows.append((tds[t_i], chg))
+        rows.append((_cell_ticker(cells[t_i]), chg))
     return rows
+
+
+def _cell_ticker(cell):
+    """从 ticker 单元格取干净代码。2026-07 Finviz 改版后单元格含 logo/首字母元素,
+    get_text 会串出脏代码 (如 CELC -> 'CCELC', 曾导致误买撞名标的 EELV)。
+    优先 data-boxover-ticker 属性, 其次锚点 href 的 t= 参数, 文本仅兜底。"""
+    tick = (cell.get("data-boxover-ticker") or "").strip()
+    if tick:
+        return tick
+    a = cell.find("a", href=True)
+    if a:
+        m = re.search(r"[?&]t=([A-Za-z0-9.\-]+)", a["href"])
+        if m:
+            return m.group(1)
+    return cell.get_text(strip=True)
 
 
 async def fetch_ib_scanner(broker, cfg):

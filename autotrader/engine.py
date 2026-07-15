@@ -59,6 +59,17 @@ class Engine:
             src = "IB扫描器"
         prices = await self.broker.last_prices([t for t, _ in candidates[:15]])
         self.plan = build_plan(self.cfg, candidates, prices, budget)
+        # 失效防护: 候选窗口是满的、却几乎全部无法在 IB 定价 => 选股数据疑似损坏
+        # (2026-07-15 事故: Finviz 改版致代码解析出错, 唯一"撞上真名"的 EELV 被误买)。
+        # 宁可空仓一晚, 不买垃圾数据选出的票。
+        sc = self.cfg["screener"]
+        window = candidates[sc["skip_rank"]: sc["skip_rank"] + sc["n_stocks"]]
+        if len(window) >= sc["n_stocks"] and len(self.plan) <= max(2, sc["n_stocks"] // 3):
+            self.notify.send(f"🚨 [{d}] 候选 {len(window)} 只但仅 {len(self.plan)} 只可在 IB 定价 — "
+                             f"选股数据疑似异常 (解析/行情故障), 今晚放弃买入", "critical")
+            self.db.record_run(str(d), True, 0, 0, 0, budget, "选股数据异常, 放弃买入")
+            self.plan = []
+            return False
         lines = [f"{t} x{s} @~{p:.2f} (${s * p:,.0f})" for t, s, p in self.plan]
         self.notify.send(f"[{d}] 买入计划({src}) 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
         self._earnings_watch(d)  # 仅观察不过滤 (2026-07-06 决定: 样本 21 笔不足以立规则)
@@ -145,16 +156,26 @@ class Engine:
         fills = await self.broker.todays_fills()
         self._persist_fills(fills)
         target_mult = 1 + self.cfg["exits"]["overnight_target_pct"] / 100
-        n = 0
+        # 同一 MOC 单可能分多笔部分成交回报 (2026-07-15: EELV 一单 15 笔), 按 symbol
+        # 聚合成一个 lot (vwap), 否则台账碎片化且卖出链会挂一堆小单白付佣金。
+        agg = {}
         for f in fills:
             e, c = f.execution, f.contract
             if e.side != "BOT" or self.db.exec_seen(e.execId):
                 continue
-            self.db.add_lot(c.symbol, str(d), int(e.shares), float(e.avgPrice),
-                            round_tick(float(e.avgPrice) * target_mult))
-            self.db.mark_exec(e.execId)
-            n += 1
-        self.notify.send(f"[{d}] 成交确认: {n} 笔新买入已入台账")
+            a = agg.setdefault(c.symbol, [0.0, 0.0, []])
+            a[0] += float(e.shares)
+            a[1] += float(e.shares) * float(e.price)
+            a[2].append(e.execId)
+        n_execs = 0
+        for sym, (qty, cash, exec_ids) in sorted(agg.items()):
+            vwap = cash / qty
+            self.db.add_lot(sym, str(d), int(qty), round(vwap, 4),
+                            round_tick(vwap * target_mult))
+            for eid in exec_ids:
+                self.db.mark_exec(eid)
+            n_execs += len(exec_ids)
+        self.notify.send(f"[{d}] 成交确认: {len(agg)} 个新买入 lot 已入台账 ({n_execs} 笔成交)")
 
     async def _sell_price_for(self, lot):
         """智能挂价: 市价已超目标则跟随抬价 (不超过 ask), 否则用目标价。"""
