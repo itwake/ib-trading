@@ -150,13 +150,19 @@ class Engine:
             log.warning("财报观察失败: %s", e)
 
     async def do_submit_moc(self, d):
-        ok = 0
+        ok, fails = 0, []
         for t, shares, ref in self.plan:
             trade = await self.broker.buy_moc(t, shares)
             self.db.record_order(getattr(getattr(trade, "order", None), "orderId", -1) if trade else -1,
                                  0, "MOC_BUY", t, shares, 0, "submitted")
-            ok += 1
-        self.notify.send(f"[{d}] 已提交 {ok}/{len(self.plan)} 个 MOC 买单")
+            if trade is not None or self.broker.dry:  # dry 模式 _send 恒返 None, 视为成功
+                ok += 1
+            else:
+                fails.append(t)
+        msg = f"[{d}] 已提交 {ok}/{len(self.plan)} 个 MOC 买单"
+        if fails:
+            msg += "；提交失败: " + ", ".join(fails)
+        self.notify.send(msg, "warn" if fails else "info")
 
     def _persist_fills(self, fills):
         """所有成交按 execId 固化进 fills 表 (跨会话累积)。reqExecutions 只返回网关时区
@@ -195,6 +201,12 @@ class Engine:
                 self.db.mark_exec(eid)
             n_execs += len(exec_ids)
         self.notify.send(f"[{d}] 成交确认: {len(agg)} 个新买入 lot 已入台账 ({n_execs} 笔成交)")
+        # 计划 vs 成交缺口告警: 拒单/停牌导致 MOC 未成交时, 这里是唯一能发现的地方。
+        # 只在本次有新成交、或计划>0 却一笔未成时告警 (16:2x 的重跑不重复报)。
+        planned, filled = self.db.planned_on(str(d)), self.db.lot_count_on(str(d))
+        if planned and filled < planned and (n_execs > 0 or filled == 0):
+            self.notify.send(f"⚠️ [{d}] 计划 {planned} 只、实际成交 {filled} 只 — "
+                             f"缺 {planned - filled} 只, 检查拒单/停牌/竞价未成交", "warn")
 
     async def _sell_price_for(self, lot):
         """智能挂价: 市价已超目标则跟随抬价 (不超过 ask), 否则用目标价。"""

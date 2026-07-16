@@ -145,6 +145,15 @@ class DB:
         cur = self.conn.execute("SELECT COALESCE(SUM(pnl),0) FROM lots WHERE exit_date=?", (date,))
         return cur.fetchone()[0]
 
+    def lot_count_on(self, entry_date) -> int:
+        cur = self.conn.execute("SELECT COUNT(*) FROM lots WHERE entry_date=?", (entry_date,))
+        return cur.fetchone()[0]
+
+    def planned_on(self, date) -> int:
+        cur = self.conn.execute("SELECT n_planned FROM nightly_runs WHERE date=?", (date,))
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] else 0
+
     def snapshot(self, date, netliq, cash, gross, available, n_pos, realized_today):
         self.conn.execute(
             "INSERT OR REPLACE INTO snapshots VALUES (?,?,?,?,?,?,?)",
