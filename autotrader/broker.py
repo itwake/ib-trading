@@ -136,6 +136,15 @@ class Broker:
             out.append([t.strftime("%H:%M"), b.open, b.high, b.low, b.close])
         return out
 
+    async def stock_type(self, symbol):
+        """contractDetails.stockType (COMMON/ETF/ETN/...), 查询失败返回 ''。"""
+        try:
+            cds = await self.ib.reqContractDetailsAsync(Stock(symbol, "SMART", "USD"))
+            return (cds[0].stockType or "").upper() if cds else ""
+        except Exception as e:
+            log.warning("stockType 查询失败 %s: %s", symbol, e)
+            return ""
+
     async def sell_context(self):
         """一次性快照: (持仓表, 在途卖单表)。循环挂单必须复用同一份快照,
         逐票重复调 reqPositions 会竞态返回空 (2026-07-06 事故根因)。"""

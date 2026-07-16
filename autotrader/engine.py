@@ -57,6 +57,10 @@ class Engine:
             from screener import fetch_ib_scanner
             candidates = await fetch_ib_scanner(self.broker, self.cfg)
             src = "IB扫描器"
+        try:  # 只买普通股: 排除 ETF/ETN/基金 (Finviz 偶发混入 + 2026-07-15 脏码撞出合法 ETF 的教训)
+            candidates = await self._exclude_non_common(candidates)
+        except Exception as e:
+            log.warning("标的类型过滤失败(不阻断): %s", e)
         prices = await self.broker.last_prices([t for t, _ in candidates[:15]])
         self.plan = build_plan(self.cfg, candidates, prices, budget)
         # 失效防护: 候选窗口是满的、却几乎全部无法在 IB 定价 => 选股数据疑似损坏
@@ -108,6 +112,21 @@ class Engine:
                 got = resolve_sector(s)
                 if got:
                     self.db.set_sector(s, got)
+
+    async def _exclude_non_common(self, candidates, limit=15):
+        """从将被定价的前 limit 个候选里排除非普通股 (ETF/ETN/FUND)。
+        IB 扫描器后备路径已有同款过滤, 此处补齐 Finviz 主路径。"""
+        out, dropped = [], []
+        for i, (t, chg) in enumerate(candidates):
+            if i < limit:
+                st = await self.broker.stock_type(t)
+                if st and any(x in st for x in ("ETF", "ETN", "FUND")):
+                    dropped.append(f"{t}({st})")
+                    continue
+            out.append((t, chg))
+        if dropped:
+            self.notify.send("已排除非普通股: " + ", ".join(dropped), "warn")
+        return out
 
     def _earnings_watch(self, d):
         """观察性标记: 计划里哪些票在持仓期内(今晚AMC/明晨BMO)发布财报。只播报留痕, 不拦截。"""
