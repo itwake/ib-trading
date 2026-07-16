@@ -337,7 +337,8 @@ class Engine:
         done = 0
         for r in rows:
             try:
-                sub = df[r["symbol"]] if len(syms) > 1 else df
+                # group_by="ticker" 对单一 symbol 也返回两层列, 按列层级判断
+                sub = df[r["symbol"]] if df.columns.nlevels > 1 else df
                 sub = sub.dropna(subset=["Close"])
                 dates = [str(x.date()) for x in sub.index]
                 if r["date"] not in dates:

@@ -272,7 +272,9 @@ def quotes():
         px = {}
         for s in syms:
             try:
-                df = data[s] if len(syms) > 1 else data
+                # group_by="ticker" 对单一 symbol 也返回两层列 (2026-07-15 单持仓日发现),
+                # 按实际列层级判断, 不能按 symbol 数量判断
+                df = data[s] if data.columns.nlevels > 1 else data
                 px[s] = float(df["Close"].dropna().iloc[-1])
             except Exception:
                 px[s] = None
@@ -289,7 +291,15 @@ def quotes():
                         "pct": round((p / l["entry_price"] - 1) * 100, 2) if p else None})
         return {"quotes": out, "unrealized": round(unreal, 2)}
 
-    return cached("quotes_resp", 60, build)
+    resp = cached("quotes_resp", 60, build)
+    # stale 回退只能救短暂故障, 不能把已卖掉的旧持仓当现状展示:
+    # 按当前台账过滤缓存行, 只留还在持有的 symbol
+    if isinstance(resp, dict) and resp.get("stale"):
+        open_syms = {l["symbol"] for l in lots}
+        rows = [r for r in resp.get("quotes", []) if r.get("symbol") in open_syms]
+        resp = {**resp, "quotes": rows,
+                "unrealized": round(sum(r.get("unrealized") or 0 for r in rows), 2)}
+    return resp
 
 
 @app.get("/api/lots/summary")
