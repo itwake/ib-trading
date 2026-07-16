@@ -98,18 +98,28 @@ class Broker:
         return got[0] if got else None
 
     async def last_prices(self, symbols):
+        """批量取最新价: 一次 qualify + 一次快照请求。
+        逐票串行版本曾把买入链拖长数分钟 (2026-07-16), 批量后 ~5s。"""
         out = {}
-        for sym in symbols:
-            try:
-                c = await self.qualify(sym)
-                if not c:
-                    continue
-                [t] = await self.ib.reqTickersAsync(c)
-                p = t.last or t.close
-                if p and p > 0:
-                    out[sym] = float(p)
-            except Exception as e:
-                log.warning("取价失败 %s: %s", sym, e)
+        if not symbols:
+            return out
+        try:
+            qualified = [c for c in await self.ib.qualifyContractsAsync(
+                *[Stock(s, "SMART", "USD") for s in symbols]) if c and c.conId]
+        except Exception as e:
+            log.warning("批量 qualify 失败: %s", e)
+            return out
+        if not qualified:
+            return out
+        try:
+            tickers = await self.ib.reqTickersAsync(*qualified)
+        except Exception as e:
+            log.warning("批量取价失败: %s", e)
+            return out
+        for t in tickers:
+            p = _clean(t.last) or _clean(t.close)
+            if p:
+                out[t.contract.symbol] = float(p)
         return out
 
     async def market_ref(self, contract):

@@ -85,10 +85,8 @@ class Engine:
         self.notify.send(f"[{d}] 买入计划({src}) 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
         self._earnings_watch(d)  # 仅观察不过滤 (2026-07-06 决定: 样本 21 笔不足以立规则)
         self.db.record_run(str(d), True, 0, 0, len(self.plan), budget, "plan built")
-        try:  # 候选追踪: 跌幅榜前 watch_n 名全部登记 (含未买入), 次日回填结果
-            await self._record_watchlist(d, candidates)
-        except Exception as e:
-            log.warning("候选追踪登记失败: %s", e)
+        # 候选追踪的登记 (含 20 次板块解析, 网络慢) 移出买入关键路径, 由日报执行
+        self._watch_candidates = list(candidates)
         return bool(self.plan)
 
     async def _record_watchlist(self, d, candidates):
@@ -121,19 +119,19 @@ class Engine:
                     self.db.set_sector(s, got)
 
     async def _exclude_non_common(self, candidates, limit=15):
-        """从将被定价的前 limit 个候选里排除非普通股 (ETF/ETN/FUND)。
+        """从将被定价的前 limit 个候选里排除非普通股 (ETF/ETN/FUND), 并行查询。
         IB 扫描器后备路径已有同款过滤, 此处补齐 Finviz 主路径。"""
+        head = candidates[:limit]
+        types = await asyncio.gather(*(self.broker.stock_type(t) for t, _ in head))
         out, dropped = [], []
-        for i, (t, chg) in enumerate(candidates):
-            if i < limit:
-                st = await self.broker.stock_type(t)
-                if st and any(x in st for x in ("ETF", "ETN", "FUND")):
-                    dropped.append(f"{t}({st})")
-                    continue
+        for (t, chg), st in zip(head, types):
+            if st and any(x in st for x in ("ETF", "ETN", "FUND")):
+                dropped.append(f"{t}({st})")
+                continue
             out.append((t, chg))
         if dropped:
             self.notify.send("已排除非普通股: " + ", ".join(dropped), "warn")
-        return out
+        return out + list(candidates[limit:])
 
     def _earnings_watch(self, d):
         """观察性标记: 计划里哪些票在持仓期内(今晚AMC/明晨BMO)发布财报。只播报留痕, 不拦截。"""
@@ -322,7 +320,14 @@ class Engine:
             await self._capture_minute_bars(d)
         except Exception as e:
             log.warning("分钟线抓取失败: %s", e)
-        try:  # 观测2: 回填历史候选 (含未买入) 的次日结果
+        try:  # 观测2: 登记今晚候选 (从买入关键路径移来, 板块解析慢; add_watch 幂等)
+            cands = getattr(self, "_watch_candidates", None)
+            if cands:
+                await self._record_watchlist(d, cands)
+                self._watch_candidates = None
+        except Exception as e:
+            log.warning("候选追踪登记失败: %s", e)
+        try:  # 观测3: 回填历史候选 (含未买入) 的次日结果
             self._eval_watchlist(d)
         except Exception as e:
             log.warning("候选追踪回填失败: %s", e)
