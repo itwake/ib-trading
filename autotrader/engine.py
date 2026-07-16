@@ -57,16 +57,17 @@ class Engine:
             from screener import fetch_ib_scanner
             candidates = await fetch_ib_scanner(self.broker, self.cfg)
             src = "IB扫描器"
+        sc = self.cfg["screener"]
+        depth = sc["skip_rank"] + sc["n_stocks"] + 15  # 递补池深度: 主窗口 + 15 个候补
         try:  # 只买普通股: 排除 ETF/ETN/基金 (Finviz 偶发混入 + 2026-07-15 脏码撞出合法 ETF 的教训)
-            candidates = await self._exclude_non_common(candidates)
+            candidates = await self._exclude_non_common(candidates, limit=depth)
         except Exception as e:
             log.warning("标的类型过滤失败(不阻断): %s", e)
-        prices = await self.broker.last_prices([t for t, _ in candidates[:15]])
+        prices = await self.broker.last_prices([t for t, _ in candidates[:depth]])
         self.plan = build_plan(self.cfg, candidates, prices, budget)
         # 失效防护: 候选窗口是满的、却几乎全部无法在 IB 定价 => 选股数据疑似损坏
         # (2026-07-15 事故: Finviz 改版致代码解析出错, 唯一"撞上真名"的 EELV 被误买)。
         # 宁可空仓一晚, 不买垃圾数据选出的票。
-        sc = self.cfg["screener"]
         window = candidates[sc["skip_rank"]: sc["skip_rank"] + sc["n_stocks"]]
         if len(window) >= sc["n_stocks"] and len(self.plan) <= max(2, sc["n_stocks"] // 3):
             self.notify.send(f"🚨 [{d}] 候选 {len(window)} 只但仅 {len(self.plan)} 只可在 IB 定价 — "
@@ -74,7 +75,13 @@ class Engine:
             self.db.record_run(str(d), True, 0, 0, 0, budget, "选股数据异常, 放弃买入")
             self.plan = []
             return False
-        lines = [f"{t} x{s} @~{p:.2f} (${s * p:,.0f})" for t, s, p in self.plan]
+        rank = {t: i + 1 for i, (t, _) in enumerate(candidates)}
+        main_end = sc["skip_rank"] + sc["n_stocks"]
+        lines = [f"{t} x{s} @~{p:.2f} (${s * p:,.0f})"
+                 + (f" [递补·第{rank[t]}名]" if rank.get(t, 0) > main_end else "")
+                 for t, s, p in self.plan]
+        if len(self.plan) < sc["n_stocks"]:
+            lines.append(f"⚠️ 候选耗尽, 仅凑到 {len(self.plan)}/{sc['n_stocks']} 只")
         self.notify.send(f"[{d}] 买入计划({src}) 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
         self._earnings_watch(d)  # 仅观察不过滤 (2026-07-06 决定: 样本 21 笔不足以立规则)
         self.db.record_run(str(d), True, 0, 0, len(self.plan), budget, "plan built")

@@ -12,15 +12,36 @@ log = logging.getLogger("screener")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"}
 
 
-def fetch_finviz(cfg):
+def fetch_finviz(cfg, pages=2):
     """返回 [(ticker, change_pct)] 按跌幅升序 (Finviz o=change 已排序)。
-    服务器直连 IP 被 Finviz 拒 (403), 配置 screener.proxy 借道 Windows 上的 Clash 出口。"""
-    url = cfg["screener"]["finviz_url"].format(0)
+    抓 pages 页 (每页 20 行) 作为递补池; 第 1 页失败抛异常 (触发 IB 扫描器后备),
+    后续页失败只降级不阻断。服务器直连 IP 被 Finviz 拒 (403), 配置 screener.proxy
+    借道 Windows 上的 Clash 出口。"""
     proxy = cfg["screener"].get("proxy") or None
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    resp = requests.get(url, headers=HEADERS, timeout=20, proxies=proxies)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    rows, seen = [], set()
+    for pg in range(pages):
+        url = cfg["screener"]["finviz_url"].format(1 + pg * 20)
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=20, proxies=proxies)
+            resp.raise_for_status()
+            page_rows = _parse_page(resp.text)
+        except Exception as e:
+            if pg == 0:
+                raise
+            log.warning("Finviz 第 %d 页失败(忽略, 用前 %d 行): %s", pg + 1, len(rows), e)
+            break
+        if not page_rows:
+            break  # 榜单到头
+        for t, chg in page_rows:
+            if t not in seen:
+                seen.add(t)
+                rows.append((t, chg))
+    return rows
+
+
+def _parse_page(html):
+    soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="screener_table")
     if table is None:
         raise RuntimeError("Finviz 页面结构变化或被拦截")
@@ -87,23 +108,29 @@ async def fetch_ib_scanner(broker, cfg):
 
 
 def build_plan(cfg, candidates, prices, budget):
-    """candidates: [(ticker, chg)], prices: {ticker: last_price}
-    返回 [(ticker, shares, ref_price)] 平均分配, 手数取整。"""
+    """candidates: [(ticker, chg)] 已按跌幅排序, prices: {ticker: last_price}
+    返回 [(ticker, shares, ref_price)]。
+    从 skip_rank 之后按名次顺序遴选: 无价 / 配不进单股配额的跳过, 由后位递补,
+    凑满 n_stocks 或候选耗尽为止 (2026-07-15 用户决定: 补齐到 N, 总资金不变)。
+    单股配额固定 = min(预算/n_stocks, 单股上限) — 递补不改变每只的资金配置。"""
     sc = cfg["screener"]
-    picks = candidates[sc["skip_rank"]: sc["skip_rank"] + sc["n_stocks"]]
-    picks = [(t, c) for t, c in picks if prices.get(t)]
-    if not picks:
+    n = sc["n_stocks"]
+    if n <= 0:
         return []
     per_cap_max = budget * cfg["budget"]["per_stock_max_pct"] / 100
-    target = min(budget / len(picks), per_cap_max)
+    target = min(budget / n, per_cap_max)
     lot = sc["lot_size"]
     plan = []
     spent = 0.0
-    for t, _ in picks:
-        p = prices[t]
+    for t, _ in candidates[sc["skip_rank"]:]:
+        if len(plan) >= n:
+            break
+        p = prices.get(t)
+        if not p:
+            continue
         shares = int(target / p // lot * lot)
         if shares <= 0:
-            log.info("跳过 %s: 单价 %.2f 超出单股预算", t, p)
+            log.info("跳过 %s: 单价 %.2f 超出单股配额, 由后位递补", t, p)
             continue
         plan.append((t, shares, p))
         spent += shares * p

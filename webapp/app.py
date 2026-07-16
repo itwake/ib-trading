@@ -104,7 +104,7 @@ def _sched_details(schedule, open_lots, snap):
         est = f"，按最新快照估算 ≈ ${v:,.0f}"
     det = {
         "gate_check": f"实时取 VIX/SPY 判定今晚是否开仓（VIX≥{g['vix_min']} 或 SPY≤{g['spy_max_pct']}% 即放行；被拦截则跳过今晚买入，卖出链不受影响）",
-        "build_plan": f"若放行：抓 Finviz 跌幅榜，跳过前 {sc['skip_rank']} 名取 {sc['n_stocks']} 只；预算 = min(${b['nightly_max_usd']:,}, {b['gross_max_x_netliq']}×净值−现持仓){est}；可用资金低于 ${b['min_available_funds_usd']:,} 则放弃",
+        "build_plan": f"若放行：抓 Finviz 跌幅榜（两页），跳过前 {sc['skip_rank']} 名从第 {sc['skip_rank'] + 1} 名起取 {sc['n_stocks']} 只——无价/ETF/超单股配额的跳过并由后位递补；预算 = min(${b['nightly_max_usd']:,}, {b['gross_max_x_netliq']}×净值−现持仓){est}，每只配额固定 = 预算/{sc['n_stocks']}；可用资金低于 ${b['min_available_funds_usd']:,} 则放弃",
         "submit_moc": f"对选出的 ~{sc['n_stocks']} 只各提交 MOC 收盘竞价买单（每只≈预算/{sc['n_stocks']}，按官方收盘价成交，NYSE 截止 15:50 ET）",
         "confirm_fills": f"拉取今日买入成交，逐笔登记 lot，目标价 = 成交均价 ×{1 + ex['overnight_target_pct'] / 100:.3f}",
         "overnight_sells": f"挂 OVERNIGHT 场所限价卖单（防超卖清点后，+{ex['overnight_target_pct']}% 起、市价更高则跟随抬价）：{lots_line}",
@@ -621,7 +621,7 @@ def timeline(limit: int = 400):
             future.append(dict(iso=iso, act=act, symbol="市场", qty=None, price=None,
                                note=f"VIX≥{g['vix_min']} 或 SPY≤{g['spy_max_pct']}% 即放行, 否则今晚不买"))
         elif name == "build_plan":
-            note = f"Finviz 跌幅榜第 {sc['skip_rank'] + 1}~{sc['skip_rank'] + sc['n_stocks']} 名"
+            note = f"Finviz 跌幅榜第 {sc['skip_rank'] + 1} 名起取 {sc['n_stocks']} 只 (无价/ETF/超配额由后位递补)"
             if est is not None:
                 note += f"; 预算估算 ${est:,.0f}"
             future.append(dict(iso=iso, act=act, symbol="待选股", qty=sc["n_stocks"], price=None, note=note))
