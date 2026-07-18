@@ -64,6 +64,7 @@ class DB:
         "perf_w", "perf_m", "perf_ytd", "perf_y", "vol_w", "relvol", "price", "cap_b",
         "zscore", "gap_pct", "clv", "vs_200dma", "vs_52w_high", "last30_pct",
         "sector_chg", "rel_drop", "earn_recent", "earn_next", "si_pct",
+        "dilution", "halted",
     )
 
     def __init__(self, path):

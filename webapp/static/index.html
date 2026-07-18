@@ -530,7 +530,11 @@ async function loadRuns(){
       return `<div class="card" style="padding:10px;"><div class="k" data-tip="${t.hypothesis}">${t.dim} ⓘ</div>
         <table style="width:100%; margin-top:6px; font-size:12px;"><tr><th>分桶</th><th>样本</th><th>命中率</th><th>均收益</th></tr>${rows}</table></div>`;
     }).join('') || '<div class="card" style="padding:10px; color:var(--muted);">特征数据积累中——今晚日报起自动打标，次日回填结果后此处出现对比</div>';
-    (wl.rows||[]).forEach(r=>{ r.earn = r.earn_recent==null?null:(r.earn_recent?'📊':'—'); });
+    (wl.rows||[]).forEach(r=>{
+      r.earn = r.earn_recent==null?null:(r.earn_recent?'📊':'—');
+      r.dilu = r.dilution==null?null:(r.dilution?'⚠️':'—');
+      r.halt = r.halted==null?null:(r.halted?'⛔':'—');
+    });
     table($('#w-rows'), (wl.rows||[]).slice(0,120), [['date','日期'],['rank','名次'],['symbol','代码'],
       ['sector','板块'],['change_pct','跌幅','%'],
       ['zscore','z','','归一化跌幅=|当日跌幅|/自身周均波动。z<1=日常噪音，z≥2=异常深跌'],
@@ -540,6 +544,8 @@ async function loadRuns(){
       ['vs_200dma','vs200日线','%','收盘价相对200日均线。上方=趋势中回调，下方=破位'],
       ['rel_drop','vs板块','%','当日跌幅−所属板块ETF涨跌。大幅跑输=独跌（个股信息）'],
       ['earn','财报','','📊=当日或前一交易日出过财报（下跌大概率财报驱动）'],
+      ['dilu','增发','','⚠️=近7日向 SEC 提交过增发/货架类文件（424B*/S-1/S-3），反弹或被稀释卖压压制'],
+      ['halt','停牌','','⛔=当日出现在 Nasdaq 停牌/LULD 名单，价格发现被延迟'],
       ['si_pct','做空%','%','做空占流通盘比例。≥15%=高做空'],
       ['bought','已买','','1=实际买入 0=仅观察'],
       ['target_hit','命中','','次日最高触及 收盘×(1+止盈%)'],

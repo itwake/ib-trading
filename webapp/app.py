@@ -754,6 +754,10 @@ def watchlist(days: int = 60):
          lambda r: None if r.get("last30_pct") is None else ("尾盘加速跌 ≤-1%" if r["last30_pct"] <= -1 else "尾盘平稳")),
         ("跳空占比", "假设: 大幅低开 (开盘缺口≤-2%) 多绑定隔夜新闻 = 信息性下跌, 命中率更低; 盘中阴跌更可能是流动性。",
          lambda r: None if r.get("gap_pct") is None else ("跳空低开 ≤-2%" if r["gap_pct"] <= -2 else "盘中跌为主")),
+        ("增发/货架", "假设: 近7日提交过增发/货架文件 (424B*/S-1/S-3等, SEC EDGAR) 的下跌被折价定价与 ATM 卖压压制, 反弹受阻 (Bradley-Yuan; 实盘 MDA 案例)。",
+         lambda r: None if r.get("dilution") is None else ("近7日有增发文件" if r["dilution"] else "无增发文件")),
+        ("当日停牌", "假设: 当日触发停牌/LULD 熔断的深跌股, 价格发现被延迟, 次日沿原方向续跌而非反弹 (Kim-Rhee 1997)。",
+         lambda r: None if r.get("halted") is None else ("当日停牌/熔断" if r["halted"] else "未停牌")),
     ]
     by_tag = []
     for title, hyp, fn in TAGS:

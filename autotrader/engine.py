@@ -116,6 +116,8 @@ class Engine:
                          ("板块对照", lambda: self._tag_sector_rel(d, head)),
                          ("财报标签", lambda: self._tag_earnings(d, head)),
                          ("做空比例", lambda: self._tag_short_interest(d, head)),
+                         ("增发检索", lambda: self._tag_dilution(d, head)),
+                         ("停牌检索", lambda: self._tag_halts(d, head)),
                          ("夜间环境", lambda: self._tag_night_env(d, candidates))):
             try:
                 fn()
@@ -221,6 +223,42 @@ class Engine:
                     self.db.set_watch_features(str(d), t, si_pct=round(float(v) * 100, 1))
             except Exception as e:
                 log.warning("做空比例失败 %s: %s", t, e)
+
+    _SEC_UA = "ibtrading-observer xiaoj313@gmail.com"
+
+    def _tag_dilution(self, d, head):
+        """增发/货架标签: d 前 7 日内提交过 424B*/S-1/S-3/F-1/F-3/FWP = 稀释压制风险
+        (增发折价定价 + ATM 卖单墙, MDA 案例)。数据: SEC EDGAR (免费)。"""
+        import time
+        import catalysts
+        today = str(now_et().date())
+        if getattr(self, "_cik_day", None) != today:
+            self._cik_map = catalysts.load_cik_map(self._SEC_UA)
+            self._cik_day = today
+        for t, _ in head:
+            cik = self._cik_map.get(t.upper())
+            if not cik:
+                continue
+            try:
+                hits = catalysts.dilution_filings(cik, d, self._SEC_UA)
+                self.db.set_watch_features(str(d), t, dilution=1 if hits else 0)
+                if hits:
+                    log.info("增发标签 %s: %s", t, hits[:3])
+            except Exception as e:
+                log.warning("增发检索失败 %s: %s", t, e)
+            time.sleep(0.15)  # SEC 限速礼貌间隔
+
+    def _tag_halts(self, d, head):
+        """停牌/LULD 标签: 当日出现在 Nasdaq 停牌名单 = 价格发现被延迟, 次日续跌风险
+        (Kim-Rhee 1997)。RSS 只含当日, 无法回填历史。"""
+        import catalysts
+        proxy = self.cfg["screener"].get("proxy") or None
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        halted = catalysts.todays_halts(d, self._SEC_UA, proxies)
+        for t, _ in head:
+            self.db.set_watch_features(str(d), t, halted=1 if t.upper() in halted else 0)
+        if halted:
+            log.info("[%s] 当日停牌名单命中候选: %s", d, sorted(halted & {t for t, _ in head}) or "无")
 
     def _tag_night_env(self, d, candidates):
         """夜间环境: VIX3M 期限结构 (VIX/VIX3M>1=近端恐慌, Nagel 2012 反转收益随之上升)
