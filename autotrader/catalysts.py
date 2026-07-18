@@ -20,6 +20,10 @@ DILUTION_PREFIXES = ("424B", "S-1", "S-3", "F-1", "F-3", "FWP")
 
 def is_dilution_form(form):
     f = (form or "").upper().strip()
+    # 424B2 排除: 大金融机构的结构化票据说明书日常滚动发行 (如花旗几乎每日 424B2),
+    # 不是股权稀释; 真正的股权增发用 424B5/424B4/424B3 (实测 07-14 花旗误报案例)
+    if f == "424B2":
+        return False
     return any(f.startswith(p) for p in DILUTION_PREFIXES)
 
 
