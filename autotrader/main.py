@@ -51,7 +51,7 @@ async def cmd_plan(cfg):
         acct = await b.account()
         budget = min(cfg["budget"]["nightly_max_usd"],
                      max(0.0, cfg["budget"]["gross_max_x_netliq"] * acct["NetLiquidation"] - acct["GrossPositionValue"]))
-        cands = fetch_finviz(cfg)
+        cands, _details = fetch_finviz(cfg)
         print("Finviz 候选:", cands[:12])
         prices = await b.last_prices([t for t, _ in cands[:15]])
         plan = build_plan(cfg, cands, prices, budget)

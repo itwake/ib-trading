@@ -58,9 +58,43 @@ CREATE TABLE IF NOT EXISTS sectors (
 
 
 class DB:
+    # 观察特征列 (2026-07-16 选股质量观测, 全部只记录不影响交易):
+    # Finviz 免费层 / 趋势与形态 / 事件与风险标签, 语义见面板悬停说明
+    WATCH_FEATURES = (
+        "perf_w", "perf_m", "perf_ytd", "perf_y", "vol_w", "relvol", "price", "cap_b",
+        "zscore", "gap_pct", "clv", "vs_200dma", "vs_52w_high", "last30_pct",
+        "sector_chg", "rel_drop", "earn_recent", "earn_next", "si_pct",
+    )
+
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.executescript(SCHEMA)
+        for col in self.WATCH_FEATURES:
+            try:
+                self.conn.execute(f"ALTER TABLE watchlist ADD COLUMN {col} REAL")
+            except sqlite3.OperationalError:
+                pass
+        for col in ("vix3m", "cand_n", "cand_avg_drop"):
+            try:
+                self.conn.execute(f"ALTER TABLE nightly_runs ADD COLUMN {col} REAL")
+            except sqlite3.OperationalError:
+                pass
+        self.conn.commit()
+
+    def set_watch_features(self, date, symbol, **cols):
+        """按白名单更新候选的观察特征列 (None 值跳过)。"""
+        cols = {k: v for k, v in cols.items() if k in self.WATCH_FEATURES and v is not None}
+        if not cols:
+            return
+        sql = "UPDATE watchlist SET " + ", ".join(f"{k}=?" for k in cols) + " WHERE date=? AND symbol=?"
+        self.conn.execute(sql, (*cols.values(), date, symbol))
+        self.conn.commit()
+
+    def set_night_env(self, date, vix3m=None, cand_n=None, cand_avg_drop=None):
+        self.conn.execute(
+            "UPDATE nightly_runs SET vix3m=COALESCE(?,vix3m), cand_n=COALESCE(?,cand_n),"
+            " cand_avg_drop=COALESCE(?,cand_avg_drop) WHERE date=?",
+            (vix3m, cand_n, cand_avg_drop, date))
         self.conn.commit()
 
     def event(self, kind, detail):
@@ -104,7 +138,8 @@ class DB:
     def record_run(self, date, gate_pass, vix, spy_pct, n_planned, budget, note=""):
         # UPSERT: 同一晚 gate_check 与 build_plan 各写一次, 后写的 0 值不得覆盖先写的真实值
         self.conn.execute(
-            "INSERT INTO nightly_runs VALUES (?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET"
+            "INSERT INTO nightly_runs (date, gate_pass, vix, spy_pct, n_planned, budget, note)"
+            " VALUES (?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET"
             " gate_pass=excluded.gate_pass, note=excluded.note,"
             " vix=CASE WHEN excluded.vix<>0 THEN excluded.vix ELSE nightly_runs.vix END,"
             " spy_pct=CASE WHEN excluded.spy_pct<>0 THEN excluded.spy_pct ELSE nightly_runs.spy_pct END,"

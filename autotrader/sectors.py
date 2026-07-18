@@ -5,6 +5,14 @@ import logging
 
 log = logging.getLogger("sectors")
 
+# GICS 板块 -> 代表性 SPDR ETF, 用于"个股独跌 vs 随板块跌"的对照观察
+SECTOR_ETF = {
+    "Healthcare": "XLV", "Technology": "XLK", "Energy": "XLE",
+    "Financial Services": "XLF", "Industrials": "XLI", "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP", "Basic Materials": "XLB",
+    "Communication Services": "XLC", "Real Estate": "XLRE", "Utilities": "XLU",
+}
+
 
 def resolve_sector(symbol):
     """返回 GICS 板块名 (如 Healthcare/Energy/Technology), 失败或未知返回 ''。"""

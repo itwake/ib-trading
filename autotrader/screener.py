@@ -13,13 +13,13 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 
 def fetch_finviz(cfg, pages=2):
-    """返回 [(ticker, change_pct)] 按跌幅升序 (Finviz o=change 已排序)。
+    """返回 ([(ticker, change_pct)], {ticker: extras}) 按跌幅升序 (Finviz o=change 已排序)。
     抓 pages 页 (每页 20 行) 作为递补池; 第 1 页失败抛异常 (触发 IB 扫描器后备),
     后续页失败只降级不阻断。服务器直连 IP 被 Finviz 拒 (403), 配置 screener.proxy
     借道 Windows 上的 Clash 出口。"""
     proxy = cfg["screener"].get("proxy") or None
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    rows, seen = [], set()
+    rows, details, seen = [], {}, set()
     for pg in range(pages):
         url = cfg["screener"]["finviz_url"].format(1 + pg * 20)
         try:
@@ -33,14 +33,38 @@ def fetch_finviz(cfg, pages=2):
             break
         if not page_rows:
             break  # 榜单到头
-        for t, chg in page_rows:
+        for t, chg, extras in page_rows:
             if t not in seen:
                 seen.add(t)
                 rows.append((t, chg))
-    return rows
+                details[t] = extras
+    return rows, details
+
+
+def _num(s):
+    """Finviz 数值解析: '3.85%'->3.85, '2.5M'->2.5e6, '1.2B'->1.2e9, '-'->None。"""
+    s = (s or "").strip().replace(",", "").replace("%", "")
+    if not s or s == "-":
+        return None
+    mult = 1.0
+    if s[-1] in "KMB":
+        mult = {"K": 1e3, "M": 1e6, "B": 1e9}[s[-1]]
+        s = s[:-1]
+    try:
+        return float(s) * mult
+    except ValueError:
+        return None
+
+
+# v=141 表头 -> 观察特征列 (选股质量观测, 2026-07-16)
+_EXTRA_COLS = {"Perf Week": "perf_w", "Perf Month": "perf_m", "Perf YTD": "perf_ytd",
+               "Perf Year": "perf_y", "Volatility W": "vol_w", "Rel Volume": "relvol",
+               "Price": "price"}
 
 
 def _parse_page(html):
+    """返回 [(ticker, chg, extras_dict)]。extras 含 Perf/波动/量比/市值等观察特征,
+    全部来自本来就要抓的页面, 零额外请求。"""
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="screener_table")
     if table is None:
@@ -58,7 +82,18 @@ def _parse_page(html):
             chg = float(tds[c_i].replace("%", ""))
         except ValueError:
             continue
-        rows.append((_cell_ticker(cells[t_i]), chg))
+        extras = {}
+        for col, key in _EXTRA_COLS.items():
+            if col in header:
+                v = _num(tds[header.index(col)])
+                if v is not None:
+                    extras[key] = round(v, 4)
+        cap = _num(cells[t_i].get("data-boxover-value") or "")
+        if cap:
+            extras["cap_b"] = round(cap / 1e9, 2)
+        if extras.get("vol_w"):  # 归一化跌幅: 当日跌幅 / 自身周均波动
+            extras["zscore"] = round(abs(chg) / extras["vol_w"], 2)
+        rows.append((_cell_ticker(cells[t_i]), chg, extras))
     return rows
 
 

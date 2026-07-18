@@ -136,8 +136,11 @@
     <div class="cards" id="w-cards"></div>
     <div class="grid2">
       <div><h4 style="color:var(--muted); margin:4px 0;">按名次段</h4><div class="scroll" style="max-height:180px"><table id="w-bucket"></table></div></div>
-      <div><h4 style="color:var(--muted); margin:4px 0;">按板块（IB 行业分类）</h4><div class="scroll" style="max-height:180px"><table id="w-sector"></table></div></div>
+      <div><h4 style="color:var(--muted); margin:4px 0;">按板块（GICS）</h4><div class="scroll" style="max-height:180px"><table id="w-sector"></table></div></div>
     </div>
+    <h3 data-tip="每个指标把候选分成 2~3 桶，对比各桶的次日命中率与平均收益——鼠标停在每个指标标题上可看「假设与证据来源」。全部指标只观察不影响交易；某个指标要升级成过滤规则的标准：至少 4~8 周数据、每桶样本充足（≥60）、且在高/低 VIX 两种环境下方向一致。">🔬 指标分桶观察（假设已预先声明）ⓘ</h3>
+    <div id="w-tags" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px;"></div>
+    <h3 style="margin-top:14px;" data-tip="逐票明细：每个候选的当晚特征 + 次日结果。列含义见表头悬停。">逐票明细 ⓘ</h3>
     <div class="scroll" style="max-height:360px"><table id="w-rows"></table></div>
   </section>
   <section id="events" class="section">
@@ -522,13 +525,35 @@ async function loadRuns(){
     const aggCols = [['key','分组'],['n','样本'],['bought','已买'],['hit_rate','命中率','%'],['avg_ret_pct','均收益','%']];
     table($('#w-bucket'), wl.by_bucket||[], aggCols);
     table($('#w-sector'), wl.by_sector||[], aggCols);
+    $('#w-tags').innerHTML = (wl.by_tag||[]).map(t=>{
+      const rows = t.buckets.map(b=>`<tr><td>${b.key}</td><td>${b.n}</td><td class="${b.hit_rate>=50?'pos':''}">${b.hit_rate}%</td><td class="${cls(b.avg_ret_pct)}">${b.avg_ret_pct>0?'+':''}${b.avg_ret_pct}%</td></tr>`).join('');
+      return `<div class="card" style="padding:10px;"><div class="k" data-tip="${t.hypothesis}">${t.dim} ⓘ</div>
+        <table style="width:100%; margin-top:6px; font-size:12px;"><tr><th>分桶</th><th>样本</th><th>命中率</th><th>均收益</th></tr>${rows}</table></div>`;
+    }).join('') || '<div class="card" style="padding:10px; color:var(--muted);">特征数据积累中——今晚日报起自动打标，次日回填结果后此处出现对比</div>';
+    (wl.rows||[]).forEach(r=>{ r.earn = r.earn_recent==null?null:(r.earn_recent?'📊':'—'); });
     table($('#w-rows'), (wl.rows||[]).slice(0,120), [['date','日期'],['rank','名次'],['symbol','代码'],
-      ['sector','板块'],['change_pct','当日跌幅','%'],['bought','已买','','1=实际买入 0=仅观察'],
-      ['target_hit','命中','','次日最高触及 收盘×(1+止盈%)'],['shadow_ret_pct','影子收益','%','命中记+目标%，未命中按次日收盘计']]);
+      ['sector','板块'],['change_pct','跌幅','%'],
+      ['zscore','z','','归一化跌幅=|当日跌幅|/自身周均波动。z<1=日常噪音，z≥2=异常深跌'],
+      ['clv','CLV','','收盘位置=(收-低)/(高-低)。<0.2=收在最低附近（假设：反弹更强）'],
+      ['gap_pct','跳空','%','开盘缺口。大幅低开多绑定隔夜新闻=信息性下跌'],
+      ['last30_pct','尾盘','%','最后30分钟涨跌。尾盘加速跌=日终价格压力（假设：反弹更强）'],
+      ['vs_200dma','vs200日线','%','收盘价相对200日均线。上方=趋势中回调，下方=破位'],
+      ['rel_drop','vs板块','%','当日跌幅−所属板块ETF涨跌。大幅跑输=独跌（个股信息）'],
+      ['earn','财报','','📊=当日或前一交易日出过财报（下跌大概率财报驱动）'],
+      ['si_pct','做空%','%','做空占流通盘比例。≥15%=高做空'],
+      ['bought','已买','','1=实际买入 0=仅观察'],
+      ['target_hit','命中','','次日最高触及 收盘×(1+止盈%)'],
+      ['shadow_ret_pct','影子收益','%','命中记+目标%，未命中按次日收盘计']]);
   }
-  rows.forEach(r=>r.gate_pass = r.gate_pass? '✅ 放行':'⛔ 拦截');
+  rows.forEach(r=>{
+    r.gate_pass = r.gate_pass? '✅ 放行':'⛔ 拦截';
+    r.term = (r.vix && r.vix3m) ? +(r.vix/r.vix3m).toFixed(2) : null;
+  });
   table($('#t-runs'), rows, [['date','日期'],['gate_pass','闸门'],
     ['vix','VIX','', '当晚判定时的 VIX 值；≥阈值即放行'],['spy_pct','SPY%','', '当晚判定时 SPY 的当日涨跌；≤阈值即放行'],
+    ['term','期限结构','','VIX/VIX3M。>1=近端恐慌(backwardation)——学术证据(Nagel 2012)显示反转策略收益随之显著上升；<0.9=市场自满'],
+    ['cand_n','榜单宽度','','当晚跌幅榜候选总数(两页)。榜单又短又浅=平静市=历史弱环境'],
+    ['cand_avg_drop','榜单均跌','%','前20名候选的平均跌幅'],
     ['n_planned','计划数'],['budget','预算'],
     ['sectors','买入板块','','当晚实际买入标的的 GICS 板块构成（板块×只数）'],['note','备注']]);
 }

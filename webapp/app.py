@@ -714,7 +714,10 @@ def watchlist(days: int = 60):
         for r in rows:
             if r.get("shadow_ret_pct") is None:
                 continue
-            a = m.setdefault(key_fn(r), {"n": 0, "hit": 0, "ret": 0.0, "bought": 0})
+            k = key_fn(r)
+            if k is None:
+                continue
+            a = m.setdefault(k, {"n": 0, "hit": 0, "ret": 0.0, "bought": 0})
             a["n"] += 1
             a["hit"] += r["target_hit"] or 0
             a["ret"] += r["shadow_ret_pct"]
@@ -724,9 +727,44 @@ def watchlist(days: int = 60):
                  "avg_ret_pct": round(v["ret"] / v["n"], 2)}
                 for k, v in sorted(m.items())]
 
+    # 观察指标分桶: 每个维度带"假设"说明 (可解释性要求)。方向全部预先声明,
+    # 升级为过滤规则的标准: ≥4-8周 + 每桶样本充足 + 高低VIX两环境方向一致。
+    def _b(v, edges_labels):
+        for edge, label in edges_labels:
+            if v < edge:
+                return label
+        return edges_labels[-1][1]
+
+    TAGS = [
+        ("财报关联", "假设: 财报驱动的下跌次日续跌而非反弹 (PEAD 文献 + 全年审计财报单净亏 -$833)。预期: 财报跌命中率显著更低。",
+         lambda r: None if r.get("earn_recent") is None else ("财报跌" if r["earn_recent"] else "无财报")),
+        ("收盘位置CLV", "假设(反直觉): 收在当日最低附近 (CLV<0.2) = 尾盘抛压式下跌、非信息性, 次日反弹更强 (IBS 从业者共识 + End-of-Day Reversal 2024)。",
+         lambda r: None if r.get("clv") is None else
+         ("① 收在低位<0.2" if r["clv"] < 0.2 else ("② 中间 0.2~0.5" if r["clv"] < 0.5 else "③ 收复 >0.5"))),
+        ("归一化跌幅z", "假设: 跌幅超出自身周均波动越多 (z≥2) 反弹期望越大——但仅限无消息下跌; z<1 只是该股日常噪音。",
+         lambda r: None if r.get("zscore") is None else
+         ("③ z≥2 异常深" if r["zscore"] >= 2 else ("② z 1~2" if r["zscore"] >= 1 else "① z<1 波动内"))),
+        ("趋势位置", "假设: 200日均线上方的回调可买, 均线下方的破位下跌续跌风险高 (George-Hwang 2004 锚定效应 + Connors 从业者回测)。",
+         lambda r: None if r.get("vs_200dma") is None else ("200日线上方" if r["vs_200dma"] >= 0 else "200日线下方")),
+        ("板块对照", "假设: 随板块同跌 = 系统性抛压、易反弹; 跑输板块≥2pp 的独跌 = 个股自身信息、续跌风险高 (IONS 传染案例的量化版)。",
+         lambda r: None if r.get("rel_drop") is None else ("独跌(跑输≥2pp)" if r["rel_drop"] <= -2 else "随板块")),
+        ("做空比例", "假设: 高做空 (≥15% float) 的大跌更可能是知情做空, 命中率更低 (Boehmer-Jones-Zhang 2008); 不建议反向博轧空。",
+         lambda r: None if r.get("si_pct") is None else ("高做空 ≥15%" if r["si_pct"] >= 15 else "正常 <15%")),
+        ("尾盘形态", "假设: 最后30分钟加速下跌 (≤-1%) = 日终价格压力而非信息, 次日反弹更强 (End-of-Day Reversal, SSRN 2024)。",
+         lambda r: None if r.get("last30_pct") is None else ("尾盘加速跌 ≤-1%" if r["last30_pct"] <= -1 else "尾盘平稳")),
+        ("跳空占比", "假设: 大幅低开 (开盘缺口≤-2%) 多绑定隔夜新闻 = 信息性下跌, 命中率更低; 盘中阴跌更可能是流动性。",
+         lambda r: None if r.get("gap_pct") is None else ("跳空低开 ≤-2%" if r["gap_pct"] <= -2 else "盘中跌为主")),
+    ]
+    by_tag = []
+    for title, hyp, fn in TAGS:
+        buckets = agg(fn)
+        if buckets:
+            by_tag.append({"dim": title, "hypothesis": hyp, "buckets": buckets})
+
     return {"rows": rows[:400], "by_bucket": agg(bucket),
             "by_sector": sorted(agg(lambda r: r["sector"] or "未知"),
-                                key=lambda x: -x["n"])[:15]}
+                                key=lambda x: -x["n"])[:15],
+            "by_tag": by_tag}
 
 
 @app.get("/api/history/summary")

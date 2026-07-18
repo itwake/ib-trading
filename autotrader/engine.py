@@ -50,12 +50,13 @@ class Engine:
             self.notify.send(f"可用资金 ${avail:,.0f} 低于阈值, 今晚不开仓", "warn")
             return False
         try:
-            candidates = fetch_finviz(self.cfg)
+            candidates, cand_details = fetch_finviz(self.cfg)
             src = "Finviz"
         except Exception as e:
             self.notify.send(f"Finviz 失败({str(e)[:80]}), 切换 IB 扫描器后备", "warn")
             from screener import fetch_ib_scanner
             candidates = await fetch_ib_scanner(self.broker, self.cfg)
+            cand_details = {}
             src = "IB扫描器"
         sc = self.cfg["screener"]
         depth = sc["skip_rank"] + sc["n_stocks"] + 15  # 递补池深度: 主窗口 + 15 个候补
@@ -85,18 +86,20 @@ class Engine:
         self.notify.send(f"[{d}] 买入计划({src}) 预算 ${budget:,.0f} (NetLiq ${netliq:,.0f}):\n" + "\n".join(lines))
         self._earnings_watch(d)  # 仅观察不过滤 (2026-07-06 决定: 样本 21 笔不足以立规则)
         self.db.record_run(str(d), True, 0, 0, len(self.plan), budget, "plan built")
-        # 候选追踪的登记 (含 20 次板块解析, 网络慢) 移出买入关键路径, 由日报执行
+        # 候选追踪的登记 (板块/特征打标, 网络慢) 移出买入关键路径, 由日报执行
         self._watch_candidates = list(candidates)
+        self._watch_details = dict(cand_details)
         return bool(self.plan)
 
-    async def _record_watchlist(self, d, candidates):
+    async def _record_watchlist(self, d, candidates, details=None):
         n = int(self.cfg["screener"].get("watch_n", 20))  # 0=关闭
         if n <= 0:
             return
         from sectors import resolve_sector
         bought = {t for t, _s, _p in self.plan}
+        head = candidates[:n]
         rows = []
-        for i, (t, chg) in enumerate(candidates[:n], start=1):
+        for i, (t, chg) in enumerate(head, start=1):
             sec = self.db.get_sector(t)
             if not sec:  # None(未查过) 或 ''(上次没取到): 重试, 只缓存非空结果
                 got = resolve_sector(t)
@@ -107,6 +110,125 @@ class Engine:
         if rows:
             self.db.add_watch(rows)
             log.info("[%s] 候选追踪登记 %d 名 (其中买入 %d)", d, len(rows), sum(r[5] for r in rows))
+        # ---- 观察特征打标 (每步独立降级, 任何一步失败不影响其他) ----
+        for step, fn in (("finviz特征", lambda: self._tag_finviz(d, head, details or {})),
+                         ("趋势形态", lambda: self._tag_trend_shape(d, head)),
+                         ("板块对照", lambda: self._tag_sector_rel(d, head)),
+                         ("财报标签", lambda: self._tag_earnings(d, head)),
+                         ("做空比例", lambda: self._tag_short_interest(d, head)),
+                         ("夜间环境", lambda: self._tag_night_env(d, candidates))):
+            try:
+                fn()
+            except Exception as e:
+                log.warning("候选特征[%s]失败: %s", step, e)
+
+    def _tag_finviz(self, d, head, details):
+        """Finviz 页面自带特征 (零额外请求): Perf 系列/周波动/量比/价格/市值/归一化跌幅。"""
+        for t, _ in head:
+            ex = details.get(t)
+            if ex:
+                self.db.set_watch_features(str(d), t, **ex)
+
+    def _tag_trend_shape(self, d, head):
+        """趋势位置 (200日均线/52周高) 与当日K线形态 (跳空占比/收盘位置 CLV)。
+        依据: George-Hwang 2004 (趋势中回调优于破位); End-of-Day Reversal 2024
+        (收在最低附近的下跌反弹更强)。一次批量下载 1 年日线。"""
+        import yfinance as yf
+        syms = [t for t, _ in head]
+        df = yf.download(syms, period="1y", interval="1d", progress=False,
+                         auto_adjust=False, group_by="ticker", threads=True)
+        for t, _ in head:
+            try:
+                sub = df[t] if df.columns.nlevels > 1 else df
+                sub = sub.dropna(subset=["Close"])
+                if len(sub) < 2 or str(sub.index[-1].date()) != str(d):
+                    continue  # 当日日线还没出, 留待人工/次日
+                o, h, l, c = (float(sub[k].iloc[-1]) for k in ("Open", "High", "Low", "Close"))
+                prev_c = float(sub["Close"].iloc[-2])
+                closes = sub["Close"]
+                feats = {
+                    "gap_pct": round((o / prev_c - 1) * 100, 2),
+                    "clv": round((c - l) / (h - l), 3) if h > l else None,
+                    "vs_52w_high": round((c / float(sub["High"].max()) - 1) * 100, 1),
+                }
+                if len(closes) >= 200:
+                    feats["vs_200dma"] = round((c / float(closes.iloc[-200:].mean()) - 1) * 100, 1)
+                self.db.set_watch_features(str(d), t, **feats)
+            except Exception as e:
+                log.warning("趋势形态失败 %s: %s", t, e)
+
+    def _tag_sector_rel(self, d, head):
+        """个股独跌 vs 随板块跌: 当日跌幅 − 所属板块 ETF 当日涨跌。
+        依据: 板块性事件的相关性风险 (IONS 传染案例), 独跌更可能是个股信息。"""
+        import yfinance as yf
+        from sectors import SECTOR_ETF
+        secs = {t: self.db.get_sector(t) for t, _ in head}
+        etfs = sorted({SECTOR_ETF[s] for s in secs.values() if s in SECTOR_ETF})
+        if not etfs:
+            return
+        df = yf.download(etfs, period="5d", interval="1d", progress=False,
+                         auto_adjust=False, group_by="ticker", threads=True)
+        etf_chg = {}
+        for e in etfs:
+            try:
+                sub = (df[e] if df.columns.nlevels > 1 else df).dropna(subset=["Close"])
+                etf_chg[e] = round((float(sub["Close"].iloc[-1]) / float(sub["Close"].iloc[-2]) - 1) * 100, 2)
+            except Exception:
+                pass
+        for t, chg in head:
+            e = SECTOR_ETF.get(secs.get(t) or "")
+            if e in etf_chg:
+                self.db.set_watch_features(str(d), t, sector_chg=etf_chg[e],
+                                           rel_drop=round(chg - etf_chg[e], 2))
+
+    def _tag_earnings(self, d, head):
+        """财报关联标签: earn_recent=当日/前一交易日出过财报 (下跌大概率信息性, PEAD 续跌);
+        earn_next=次日财报 (持仓期内二元事件)。依据: 全年审计财报单净 -$833 + PEAD 文献。"""
+        import yfinance as yf
+        prev = d
+        for _ in range(4):  # 找前一交易日
+            prev = prev - timedelta(days=1)
+            if cal.is_trading_day(prev):
+                break
+        nxt = cal.next_trading_day(d)
+        for t, _ in head:
+            try:
+                edates = yf.Ticker(t).get_earnings_dates(limit=8)
+                if edates is None or edates.empty:
+                    continue
+                ds = {str(x.date()) for x in edates.index}
+                self.db.set_watch_features(str(d), t,
+                                           earn_recent=1 if {str(d), str(prev)} & ds else 0,
+                                           earn_next=1 if str(nxt) in ds else 0)
+            except Exception as e:
+                log.warning("财报标签失败 %s: %s", t, e)
+
+    def _tag_short_interest(self, d, head):
+        """做空比例 (% of float)。依据: Boehmer 2008 高SI大跌更可能是知情做空, 续跌风险高;
+        观察阈值 15%。"""
+        import yfinance as yf
+        for t, _ in head:
+            try:
+                v = (yf.Ticker(t).info or {}).get("shortPercentOfFloat")
+                if v is not None:
+                    self.db.set_watch_features(str(d), t, si_pct=round(float(v) * 100, 1))
+            except Exception as e:
+                log.warning("做空比例失败 %s: %s", t, e)
+
+    def _tag_night_env(self, d, candidates):
+        """夜间环境: VIX3M 期限结构 (VIX/VIX3M>1=近端恐慌, Nagel 2012 反转收益随之上升)
+        + 当晚榜单宽度 (榜单又短又浅=平静市, 历史弱环境)。"""
+        import yfinance as yf
+        vix3m = None
+        try:
+            s = yf.download("^VIX3M", period="7d", interval="1d", progress=False,
+                            auto_adjust=False)["Close"].squeeze().dropna()
+            vix3m = round(float(s.iloc[-1]), 2)
+        except Exception as e:
+            log.warning("VIX3M 获取失败: %s", e)
+        drops = [chg for _, chg in candidates if chg is not None]
+        self.db.set_night_env(str(d), vix3m=vix3m, cand_n=len(candidates),
+                              cand_avg_drop=round(sum(drops) / len(drops), 2) if drops else None)
 
     def _ensure_sectors(self, symbols):
         """给一批 symbol 补全板块 (缓存进 sectors 表), 供台账/历史/持仓表显示。
@@ -316,25 +438,31 @@ class Engine:
             self._ensure_sectors(self.db.symbols_for_bars(str(d)))
         except Exception as e:
             log.warning("板块补全失败: %s", e)
-        try:  # 观测1: 当日持有/平仓标的的 1 分钟K线, 供开盘卖出时机复盘
-            await self._capture_minute_bars(d)
-        except Exception as e:
-            log.warning("分钟线抓取失败: %s", e)
-        try:  # 观测2: 登记今晚候选 (从买入关键路径移来, 板块解析慢; add_watch 幂等)
+        watch_syms = []
+        try:  # 观测1: 登记今晚候选 + 特征打标 (从买入关键路径移来; add_watch 幂等)
             cands = getattr(self, "_watch_candidates", None)
             if cands:
-                await self._record_watchlist(d, cands)
+                await self._record_watchlist(d, cands, getattr(self, "_watch_details", {}))
+                watch_syms = [t for t, _ in cands[:int(self.cfg["screener"].get("watch_n", 20))]]
                 self._watch_candidates = None
         except Exception as e:
             log.warning("候选追踪登记失败: %s", e)
+        try:  # 观测2: 1 分钟K线 (持仓/平仓标的 + 今晚候选), 候选顺带算尾盘形态特征
+            await self._capture_minute_bars(d, extra_syms=watch_syms)
+        except Exception as e:
+            log.warning("分钟线抓取失败: %s", e)
         try:  # 观测3: 回填历史候选 (含未买入) 的次日结果
             self._eval_watchlist(d)
         except Exception as e:
             log.warning("候选追踪回填失败: %s", e)
 
-    async def _capture_minute_bars(self, d):
+    async def _capture_minute_bars(self, d, extra_syms=()):
+        """当日 RTH 1分钟K线存档: 持仓/平仓标的 (卖出时机复盘) + 候选 (尾盘形态观察)。
+        候选顺带计算 last30_pct (最后30分钟涨跌): 尾盘加速下跌的反弹证据最强
+        (End-of-Day Reversal, SSRN 2024)。"""
         import json
-        syms = self.db.symbols_for_bars(str(d))
+        extra = set(extra_syms)
+        syms = list(dict.fromkeys(self.db.symbols_for_bars(str(d)) + list(extra_syms)))
         n = 0
         for sym in syms:
             try:
@@ -342,6 +470,11 @@ class Engine:
                 if bars:
                     self.db.save_minute_bars(str(d), sym, json.dumps(bars, separators=(",", ":")))
                     n += 1
+                    if sym in extra and len(bars) >= 31:
+                        c30, clast = bars[-31][4], bars[-1][4]
+                        if c30:
+                            self.db.set_watch_features(str(d), sym,
+                                                       last30_pct=round((clast / c30 - 1) * 100, 2))
             except Exception as e:
                 log.warning("分钟线失败 %s: %s", sym, e)
         if n:
