@@ -141,15 +141,19 @@ class Engine:
             try:
                 sub = df[t] if df.columns.nlevels > 1 else df
                 sub = sub.dropna(subset=["Close"])
-                if len(sub) < 2 or str(sub.index[-1].date()) != str(d):
-                    continue  # 当日日线还没出, 留待人工/次日
-                o, h, l, c = (float(sub[k].iloc[-1]) for k in ("Open", "High", "Low", "Close"))
-                prev_c = float(sub["Close"].iloc[-2])
-                closes = sub["Close"]
+                dates = [str(x.date()) for x in sub.index]
+                if str(d) not in dates:
+                    continue  # 当日日线还没出, 留待次日
+                i = dates.index(str(d))
+                if i < 1:
+                    continue
+                o, h, l, c = (float(sub[k].iloc[i]) for k in ("Open", "High", "Low", "Close"))
+                prev_c = float(sub["Close"].iloc[i - 1])
+                closes = sub["Close"].iloc[:i + 1]
                 feats = {
                     "gap_pct": round((o / prev_c - 1) * 100, 2),
                     "clv": round((c - l) / (h - l), 3) if h > l else None,
-                    "vs_52w_high": round((c / float(sub["High"].max()) - 1) * 100, 1),
+                    "vs_52w_high": round((c / float(sub["High"].iloc[:i + 1].max()) - 1) * 100, 1),
                 }
                 if len(closes) >= 200:
                     feats["vs_200dma"] = round((c / float(closes.iloc[-200:].mean()) - 1) * 100, 1)
@@ -166,13 +170,16 @@ class Engine:
         etfs = sorted({SECTOR_ETF[s] for s in secs.values() if s in SECTOR_ETF})
         if not etfs:
             return
-        df = yf.download(etfs, period="5d", interval="1d", progress=False,
+        df = yf.download(etfs, period="1mo", interval="1d", progress=False,
                          auto_adjust=False, group_by="ticker", threads=True)
         etf_chg = {}
         for e in etfs:
             try:
                 sub = (df[e] if df.columns.nlevels > 1 else df).dropna(subset=["Close"])
-                etf_chg[e] = round((float(sub["Close"].iloc[-1]) / float(sub["Close"].iloc[-2]) - 1) * 100, 2)
+                dates = [str(x.date()) for x in sub.index]
+                i = dates.index(str(d))
+                if i >= 1:
+                    etf_chg[e] = round((float(sub["Close"].iloc[i]) / float(sub["Close"].iloc[i - 1]) - 1) * 100, 2)
             except Exception:
                 pass
         for t, chg in head:
