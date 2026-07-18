@@ -15,7 +15,11 @@ log = logging.getLogger("catalysts")
 CIK_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 HALTS_RSS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
-DILUTION_PREFIXES = ("424B", "S-1", "S-3", "F-1", "F-3", "FWP")
+# FWP 不在内: 结构化票据营销件 (大银行每日数份), 真实股权增发必伴随 424B 主文件
+DILUTION_PREFIXES = ("424B", "S-1", "S-3", "F-1", "F-3")
+# 一周内 ≥ 此数量的招股类文件 = 结构化票据/中票发行程序 (如花旗一周 30 份),
+# 真实股权增发一周只有 1~3 份 —— 视为噪音不打标
+SHELF_PROGRAM_NOISE_N = 6
 
 
 def is_dilution_form(form):
@@ -42,8 +46,12 @@ def dilution_filings(cik, d, ua, window_days=7):
     recent = (r.json().get("filings") or {}).get("recent") or {}
     forms, dates = recent.get("form") or [], recent.get("filingDate") or []
     lo, hi = str(d - timedelta(days=window_days)), str(d)
-    return [(f, dt) for f, dt in zip(forms, dates)
+    hits = [(f, dt) for f, dt in zip(forms, dates)
             if lo <= dt <= hi and is_dilution_form(f)]
+    if len(hits) >= SHELF_PROGRAM_NOISE_N:
+        log.info("CIK %s: 窗口内 %d 份招股类文件, 判定为票据发行程序噪音, 不打标", cik, len(hits))
+        return []
+    return hits
 
 
 def parse_halt_symbols(xml_text, d):
