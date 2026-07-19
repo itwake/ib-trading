@@ -1,0 +1,9 @@
+[Unit]
+Description=ib-trading weekly report
+After=ibtrading-flexrecon.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ib-trading
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/opt/ib-trading/.venv/bin/python deploy/weekly_report.py

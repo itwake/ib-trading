@@ -355,6 +355,8 @@ EDITABLE = {
     "risk.cushion_alert_pct": ("num", 1, 50),
     "notify.heartbeat_minutes": ("int", 0, 1440),
     "notify.discord_webhook": ("str",),
+    "flex.token": ("str",),
+    "flex.query_id": ("str",),
 }
 
 
@@ -387,6 +389,8 @@ def get_config():
         out[path] = node
     if out.get("notify.discord_webhook"):
         out["notify.discord_webhook"] = out["notify.discord_webhook"][:45] + "…(已设置)"
+    if out.get("flex.token"):
+        out["flex.token"] = out["flex.token"][:6] + "…(已设置)"
     return {"fields": out}
 
 
@@ -691,6 +695,42 @@ def gate_history(days: int = 180):
     return cached("gate_hist", 3600, build)
 
 
+@app.get("/api/gate/shadow_sim")
+def gate_shadow_sim():
+    """如果闸门开着会怎样: 用每晚影子判定 × 该批次真实盈亏做的实盘对比 (非回测)。"""
+    rows = q("SELECT r.date, r.gate_shadow, r.vix, r.spy_pct, b.pnl, b.n FROM nightly_runs r"
+             " JOIN (SELECT entry_date, ROUND(SUM(pnl),2) pnl, COUNT(*) n FROM lots"
+             "       WHERE state='CLOSED' GROUP BY entry_date) b ON b.entry_date=r.date"
+             " WHERE r.gate_shadow IS NOT NULL ORDER BY r.date")
+    cum_a = cum_s = avoided = missed = 0.0
+    skipped = 0
+    series = []
+    for r in rows:
+        pnl = r["pnl"] or 0.0
+        cum_a += pnl
+        if r["gate_shadow"]:
+            cum_s += pnl
+        else:
+            skipped += 1
+            if pnl < 0:
+                avoided += -pnl
+            else:
+                missed += pnl
+        series.append({"date": r["date"], "shadow": int(r["gate_shadow"]), "pnl": pnl,
+                       "vix": r["vix"], "cum_actual": round(cum_a, 2), "cum_gated": round(cum_s, 2)})
+    return {"series": series, "nights": len(rows), "skipped": skipped,
+            "cum_actual": round(cum_a, 2), "cum_gated": round(cum_s, 2),
+            "avoided_loss": round(avoided, 2), "missed_gain": round(missed, 2)}
+
+
+@app.get("/api/weekly")
+def weekly_reports(limit: int = 8):
+    try:
+        return q("SELECT * FROM weekly_reports ORDER BY week DESC LIMIT ?", (int(limit),))
+    except Exception:
+        return []
+
+
 @app.get("/api/watchlist")
 def watchlist(days: int = 60):
     """候选追踪: 每晚跌幅榜前 N 名 (含未买入) 的次日结果, 按名次段/板块聚合。"""
@@ -758,6 +798,9 @@ def watchlist(days: int = 60):
          lambda r: None if r.get("dilution") is None else ("近7日有增发文件" if r["dilution"] else "无增发文件")),
         ("当日停牌", "假设: 当日触发停牌/LULD 熔断的深跌股, 价格发现被延迟, 次日沿原方向续跌而非反弹 (Kim-Rhee 1997)。",
          lambda r: None if r.get("halted") is None else ("当日停牌/熔断" if r["halted"] else "未停牌")),
+        ("入场星期", "假设: 周五入场需持仓过周末、扛两天新闻空窗 (BE 做空战周末案例), 跳空风险高于周一~四的常规隔夜。",
+         lambda r: "周" + "一二三四五"[datetime.strptime(r["date"], "%Y-%m-%d").weekday()]
+         if datetime.strptime(r["date"], "%Y-%m-%d").weekday() < 5 else None),
     ]
     by_tag = []
     for title, hyp, fn in TAGS:

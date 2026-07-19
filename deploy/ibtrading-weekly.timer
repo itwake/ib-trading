@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly report (Saturday 21:00 server time, after Flex reconciliation)
+
+[Timer]
+OnCalendar=Sat 21:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -75,11 +75,21 @@ class DB:
                 self.conn.execute(f"ALTER TABLE watchlist ADD COLUMN {col} REAL")
             except sqlite3.OperationalError:
                 pass
-        for col in ("vix3m", "cand_n", "cand_avg_drop"):
+        # gate_shadow: 闸门影子判定 (停用时也记录, 供"如果开着闸门"对比);
+        # vix3m/cand_*: 夜间环境观察
+        for col in ("vix3m", "cand_n", "cand_avg_drop", "gate_shadow"):
             try:
                 self.conn.execute(f"ALTER TABLE nightly_runs ADD COLUMN {col} REAL")
             except sqlite3.OperationalError:
                 pass
+        try:  # fees: Flex 对账回填的真实佣金 (记账时按 -$2/手估, 对账后修正)
+            self.conn.execute("ALTER TABLE lots ADD COLUMN fees REAL")
+        except sqlite3.OperationalError:
+            pass
+        self.conn.commit()
+
+    def set_gate_shadow(self, date, val):
+        self.conn.execute("UPDATE nightly_runs SET gate_shadow=? WHERE date=?", (val, date))
         self.conn.commit()
 
     def set_watch_features(self, date, symbol, **cols):

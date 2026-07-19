@@ -33,6 +33,7 @@
     "midday_reconcile_offset_min": 145
   },
   "risk": { "cushion_alert_pct": 12 },
+  "flex": { "token": "", "query_id": "" },
   "notify": { "discord_webhook": "", "heartbeat_minutes": 60 },
   "db_path": "journal.db"
 }

@@ -1,0 +1,8 @@
+[Unit]
+Description=ib-trading weekly Flex reconciliation
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ib-trading
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/opt/ib-trading/.venv/bin/python deploy/flex_reconcile.py --apply

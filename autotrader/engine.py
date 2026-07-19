@@ -38,6 +38,10 @@ class Engine:
         tag = "放行 ✅" if passed else "拦截 ⛔"
         self.notify.send(f"[{d}] 环境闸门: {tag}  {reason}")
         self.db.record_run(str(d), passed, vix or 0, spy or 0, 0, 0, reason)
+        # 影子判定单独落列 (闸门停用时也记), 供"如果开着闸门"的实盘对比
+        if vix is not None and spy is not None:
+            g = self.cfg["gate"]
+            self.db.set_gate_shadow(str(d), 1 if (vix >= g["vix_min"] or spy <= g["spy_max_pct"]) else 0)
         return passed
 
     async def do_build_plan(self, d):
