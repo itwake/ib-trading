@@ -23,6 +23,52 @@ def week_window(today=None):
     return monday, monday + timedelta(days=4)
 
 
+def _sim_exit(bars, target, place_t, trail_w):
+    """09:30~place_t 维持目标限价 (high 触及即成交); place_t 起按收盘价 trail_w% 追踪; 收盘强平。"""
+    hi = None
+    for tm, o, h, l, c in bars:
+        if tm < "09:30":
+            continue
+        if tm < place_t:
+            if h >= target:
+                return target
+            continue
+        hi = max(hi or c, c)
+        if c <= hi * (1 - trail_w / 100):
+            return c
+    return bars[-1][4]
+
+
+def trail_sim_section(db, lo_s, hi_s):
+    """累计样本上的追踪参数横评 (全历史, 非仅本周, 样本越滚越大)。"""
+    import json
+    q = lambda sql, a=(): db.conn.execute(sql, a).fetchall()
+    bars_map = {(s, d): json.loads(b) for d, s, b in q("SELECT date, symbol, bars FROM minute_bars")}
+    day_sold = {}
+    for ts, sym in q("SELECT ts, symbol FROM fills WHERE side='SLD'"):
+        if ts[11:16] >= "09:30":
+            day_sold[(sym, ts[:10])] = True
+    lots = [(s, xp, ep, tp, xd) for s, ep, tp, xp, xd in q(
+        "SELECT symbol, entry_price, target_price, exit_price, exit_date FROM lots"
+        " WHERE state='CLOSED' AND exit_price>0 AND entry_date>='2026-07-06'")
+        if (s, xd) in bars_map and day_sold.get((s, xd))]
+    if len(lots) < 10:
+        return [f"追踪模拟: 样本不足 ({len(lots)} 手)"]
+    out = [f"追踪时机模拟 (累计 {len(lots)} 手日内出场样本):"]
+    actual = sum((xp / ep - 1) * 100 for _, xp, ep, _, _ in lots) / len(lots)
+    rows = []
+    for t in ("09:30", "10:00", "11:00"):
+        for w in (0.3, 0.5, 1.0):
+            avg = sum((_sim_exit(bars_map[(s, xd)], tp, t, w) / ep - 1) * 100
+                      for s, _, ep, tp, xd in lots) / len(lots)
+            rows.append((t, w, avg))
+    for t, w, avg in sorted(rows, key=lambda x: -x[2])[:4]:
+        cur = " ← 当前实盘参数" if (t, w) == ("10:00", 0.5) else ""
+        out.append(f"  {t} 挂 {w}%: 均 {avg:+.2f}% (vs 实际 {avg - actual:+.2f}pp){cur}")
+    out.append(f"  实际出场基准: {actual:+.2f}%")
+    return out
+
+
 def main():
     cfg = load_config()
     db = DB(cfg["db_path"])
@@ -88,7 +134,13 @@ def main():
     n_all = q("SELECT COUNT(*) FROM watchlist")[0][0]
     L.append(f"指标样本: 候选 {n_all} 行, 已回填 {n_eval} 行 (毕业线参考: 每桶≥60)")
 
-    # 6. 当前持仓
+    # 6. 追踪时机模拟 (随分钟线样本每周更新; 2026-07-19 起实盘参数=10:00/0.5%)
+    try:
+        L += trail_sim_section(db, lo_s, hi_s)
+    except Exception as e:
+        L.append(f"追踪模拟失败: {e}")
+
+    # 7. 当前持仓
     open_ = q("SELECT symbol, qty, entry_price FROM lots WHERE state NOT IN ('CLOSED','ERROR')")
     if open_:
         L.append("持仓: " + "、".join(f"{s}×{n}@{p}" for s, n, p in open_))
