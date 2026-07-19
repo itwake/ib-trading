@@ -737,7 +737,14 @@ class Engine:
             await asyncio.sleep(600)
 
     async def run_forever(self):
-        self.notify.send(f"autotrader 启动 (mode={self.cfg['mode']})")
+        try:  # 启动横幅带运行版本 (update.sh 写入 VERSION), 一眼可知在跑哪个 commit
+            import os
+            with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "VERSION"), encoding="ascii") as f:
+                ver = f.read().strip()
+        except Exception:
+            ver = "unknown"
+        self.notify.send(f"autotrader 启动 (mode={self.cfg['mode']}, 版本 {ver})")
         asyncio.create_task(self.heartbeat_loop())
         while True:
             try:  # 热加载配置 (面板改动即生效; 原地更新保持引用)
