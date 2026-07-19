@@ -115,6 +115,8 @@ class Engine:
             self.db.add_watch(rows)
             log.info("[%s] 候选追踪登记 %d 名 (其中买入 %d)", d, len(rows), sum(r[5] for r in rows))
         # ---- 观察特征打标 (每步独立降级, 任何一步失败不影响其他) ----
+        import time as _time
+        log.info("[%s] 特征打标开始: %d 候选, finviz明细 %d 条", d, len(head), len(details or {}))
         for step, fn in (("finviz特征", lambda: self._tag_finviz(d, head, details or {})),
                          ("趋势形态", lambda: self._tag_trend_shape(d, head)),
                          ("板块对照", lambda: self._tag_sector_rel(d, head)),
@@ -123,8 +125,10 @@ class Engine:
                          ("增发检索", lambda: self._tag_dilution(d, head)),
                          ("停牌检索", lambda: self._tag_halts(d, head)),
                          ("夜间环境", lambda: self._tag_night_env(d, candidates))):
+            t0 = _time.time()
             try:
                 fn()
+                log.info("特征打标[%s] 完成 %.1fs", step, _time.time() - t0)
             except Exception as e:
                 log.warning("候选特征[%s]失败: %s", step, e)
 
