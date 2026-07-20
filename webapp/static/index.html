@@ -135,7 +135,9 @@
     <h3 data-tip="用每晚的影子闸门判定 × 该批次的真实盈亏做的实盘对照（不是回测）：如果闸门开着（VIX≥阈值 或 SPY≤阈值才买），会跳过哪些晚、少亏/少赚多少。这是你全年审计里证据最硬的单一变量（放行日收益密度 2.6 倍于拦截日），闸门当前处于停用状态——让实盘数据持续检验这个决定。">🚪 如果闸门开着（影子对比）ⓘ</h3>
     <div class="cards" id="g-cards"></div>
     <div class="scroll" style="max-height:200px"><table id="g-rows"></table></div>
-    <h3 data-tip="每周六自动生成：真实盈亏 vs SPY、选股漏斗、影子闸门、指标样本进度。也会推送 Discord。">📋 周报 ⓘ</h3>
+    <h3 data-tip="每周五 17:00 ET 自动生成：对每只过周末的持仓，codex 搜索未来 5 个交易日的二元事件（财报/FDA/判决/增发交割/解禁）与进行中风险（做空战/ATM）。依据：全年 8 笔最惨隔夜跳空 6 笔在周末/拦截日。">🛡 周末持仓风险简报 ⓘ</h3>
+    <div class="card"><pre id="wk-brief" style="margin:0; font-size:12px; white-space:pre-wrap;">尚无简报——每周五 17:00 ET 自动生成</pre></div>
+    <h3 data-tip="每周六自动生成：真实盈亏 vs SPY、选股漏斗、影子闸门、追踪时机模拟、指标样本进度 + codex 分析师评注。也会推送 Discord。">📋 周报 ⓘ</h3>
     <div class="card"><pre id="wk-report" style="margin:0; font-size:12px; white-space:pre-wrap;">尚无周报——每周六 21:00 自动生成</pre></div>
     <h3 data-tip="每晚把跌幅榜前 N 名全部登记（含没买的），次日自动回填结果：最高价触及 收盘×(1+止盈%) 记为命中。买入区 vs 观察区、各板块的命中率对比，用真实数据回答「该买几名到几名」「哪些板块的大跌不该接」。">👁 候选追踪（含未买入）ⓘ</h3>
     <div class="cards" id="w-cards"></div>
@@ -519,6 +521,8 @@ async function loadRuns(){
     $('#g-cards').innerHTML = '<div class="card" style="color:var(--muted);">影子判定数据积累中</div>';
   }
   if (wk && wk.length){ $('#wk-report').textContent = wk[0].text + '\n\n(生成于 ' + (wk[0].created_at||'') + ')'; }
+  const bf = await safeJ('/api/briefs?kind=weekend');
+  if (bf && bf.length){ $('#wk-brief').textContent = bf[0].text; }
   if (gh && gh.dates){
     chart('vix-chart', {type:'line', data:{labels:gh.dates, datasets:[
       {label:'VIX', data:gh.vix, borderColor:'#4a90d9', borderWidth:1.5, pointRadius:0, tension:.2},
@@ -559,6 +563,7 @@ async function loadRuns(){
       r.halt = r.halted==null?null:(r.halted?'⛔':'—');
       r.fomo = (r.vs_50dma==null||r.relvol==null)?null:((r.vs_50dma>=30&&r.relvol>=2)?'🔥':'—');
       r.news = r.news_class==null?null:({1:'①'+(r.news_type||'事件'),2:'②板块',3:'③无消息'}[r.news_class]||'—');
+      r.binev = r.binevent==null?null:(r.binevent?'⏰':'—');
     });
     table($('#w-rows'), (wl.rows||[]).slice(0,120), [['date','日期'],['rank','名次'],['symbol','代码'],
       ['sector','板块'],['change_pct','跌幅','%'],
@@ -570,6 +575,7 @@ async function loadRuns(){
       ['rel_drop','vs板块','%','当日跌幅−所属板块ETF涨跌。大幅跑输=独跌（个股信息）'],
       ['fomo','FOMO','','🔥=事前过热（收盘>50日线30%+ 且量比≥2）。回测：命中率最高但左尾最肥，期望最差——观察验证中'],
       ['news','归因','','codex 自动异动归因：①硬事件(细分类型) ②板块联动 ③查无消息。Chan 2003：无消息的大跌反弹最强'],
+      ['binev','事件⏰','','⏰=未来 2 个交易日内有已排期二元事件（财报/FDA/判决/交割/解禁），持仓期风险不对称'],
       ['earn','财报','','📊=当日或前一交易日出过财报（下跌大概率财报驱动）'],
       ['dilu','增发','','⚠️=近7日向 SEC 提交过增发/货架类文件（424B*/S-1/S-3），反弹或被稀释卖压压制'],
       ['halt','停牌','','⛔=当日出现在 Nasdaq 停牌/LULD 名单，价格发现被延迟'],

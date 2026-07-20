@@ -274,13 +274,17 @@ class Engine:
             log.info("[%s] 当日停牌名单命中候选: %s", d, sorted(halted & {t for t, _ in head}) or "无")
 
     NEWS_PROMPT = (
-        '{sym} (US stock) fell {chg}% on {d} during regular US trading. Determine why, using web '
-        'search with at least 2 different queries. Classify: 1=company-specific hard event that day '
-        'or the prior evening (subtype one of: earnings/guidance/downgrade/short-report/clinical/'
-        'offering/legal/contract/other), 2=sector or market-wide selloff with NO company-specific '
-        'news, 3=no news found. Discipline: never invent a reason; if searches surface nothing '
-        'company-specific for that date, answer 2 or 3. Reply ONLY a JSON object: '
-        '{{"class":1|2|3,"type":"...","confidence":"A|B|C","reason":"one sentence"}}')
+        '{sym} (US stock) fell {chg}% on {d} during regular US trading. Two tasks, using web '
+        'search with at least 2 different queries. TASK 1 - attribute the drop: 1=company-specific '
+        'hard event that day or the prior evening (subtype one of: earnings/guidance/downgrade/'
+        'short-report/clinical/offering/legal/contract/other), 2=sector or market-wide selloff '
+        'with NO company-specific news, 3=no news found. Discipline: never invent a reason; if '
+        'searches surface nothing company-specific for that date, answer 2 or 3. TASK 2 - check '
+        'whether {sym} has a SCHEDULED binary event within the next 2 US trading days after {d} '
+        '(earnings report, FDA/PDUFA or clinical readout, court ruling, offering settlement, '
+        'lockup expiry). Reply ONLY a JSON object: '
+        '{{"class":1|2|3,"type":"...","confidence":"A|B|C","reason":"one sentence",'
+        '"binary_event":true|false,"binary_desc":"short description or empty"}}')
 
     async def _tag_news_pulse(self, d, head):
         """异动归因 (news-pulse, 维度13): 用服务器上已授权的 codex CLI + 网络搜索,
@@ -311,7 +315,9 @@ class Engine:
                         str(d), t, news_class=int(j["class"]),
                         news_conf=conf_map.get(str(j.get("confidence", "C")).upper(), 1),
                         news_type=str(j.get("type", ""))[:24],
-                        news_reason=str(j.get("reason", ""))[:200])
+                        news_reason=str(j.get("reason", ""))[:200],
+                        binevent=1 if j.get("binary_event") else 0,
+                        binevent_desc=str(j.get("binary_desc", ""))[:120])
                 except Exception as e:
                     log.warning("异动归因失败 %s: %s", t, e)
 

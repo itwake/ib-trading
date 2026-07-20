@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS minute_bars (
 CREATE TABLE IF NOT EXISTS sectors (
   symbol TEXT PRIMARY KEY, sector TEXT
 );
+CREATE TABLE IF NOT EXISTS briefs (
+  kind TEXT, date TEXT, text TEXT,          -- LLM 简报存档 (weekend=周末风险简报)
+  PRIMARY KEY (kind, date)
+);
 """
 
 
@@ -66,6 +70,7 @@ class DB:
         "sector_chg", "rel_drop", "earn_recent", "earn_next", "si_pct",
         "dilution", "halted",
         "news_class", "news_conf", "news_type", "news_reason",  # 异动归因 (codex news-pulse)
+        "binevent", "binevent_desc",  # 持仓窗口内已排期二元事件 (归因顺路检查)
     )
 
     def __init__(self, path):

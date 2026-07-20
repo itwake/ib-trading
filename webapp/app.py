@@ -740,6 +740,15 @@ def weekly_reports(limit: int = 8):
         return []
 
 
+@app.get("/api/briefs")
+def briefs(kind: str = "weekend", limit: int = 4):
+    try:
+        return q("SELECT * FROM briefs WHERE kind=? ORDER BY date DESC LIMIT ?",
+                 (kind, int(limit)))
+    except Exception:
+        return []
+
+
 @app.get("/api/watchlist")
 def watchlist(days: int = 60):
     """候选追踪: 每晚跌幅榜前 N 名 (含未买入) 的次日结果, 按名次段/板块聚合。"""
@@ -820,6 +829,8 @@ def watchlist(days: int = 60):
         ("异动归因", "假设 (Chan 2003, 全链证据最强的分类器): ①个股硬事件的大跌→次日续跌; ③查无消息的大跌→反弹最强; ②板块联动居中。归因由服务器 codex+网络搜索每晚自动完成 (逐票一句话依据存档); 与硬标签(财报/增发/停牌)不一致 = 归因质量红旗。",
          lambda r: {1: "① 硬事件", 2: "② 板块联动", 3: "③ 查无消息"}.get(
              int(r["news_class"])) if r.get("news_class") is not None else None),
+        ("二元事件前瞻", "假设: 持仓窗口内有已排期二元事件 (财报/FDA/判决/交割/解禁) 的候选, 隔夜风险不对称 (全年审计财报单净亏 -$833 的推广)。归因时由 codex 顺路检查未来 2 个交易日。",
+         lambda r: None if r.get("binevent") is None else ("有已排期事件" if r["binevent"] else "无排期事件")),
     ]
     by_tag = []
     for title, hyp, fn in TAGS:

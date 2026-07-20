@@ -1,0 +1,8 @@
+[Unit]
+Description=ib-trading weekend holdings risk brief (codex)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ib-trading
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/opt/ib-trading/.venv/bin/python deploy/weekend_brief.py

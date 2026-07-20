@@ -69,6 +69,25 @@ def trail_sim_section(db, lo_s, hi_s):
     return out
 
 
+def analyst_commentary(stats_text):
+    """C 层: codex 读本周统计 + 可搜索市场背景, 生成分析师评注 (失败静默降级)。"""
+    import re
+    import subprocess
+    prompt = (
+        "你是这套美股 T+1 大跌股抄底系统的复盘分析师。系统机制: 每晚收盘竞价买入跌幅榜"
+        "第2~11名(中大盘), 隔夜/盘前挂+1.5%限价, 次日10:00改0.5%追踪, 当日清仓。"
+        "以下是本周自动统计:\n\n" + stats_text +
+        "\n\n可用网络搜索补充本周美股大盘背景。用中文写 5~8 句「分析师评注」: "
+        "①本周盈亏主因 ②市场环境背景 ③统计里值得注意的异常或维度变化 ④下周关注点。"
+        "克制、基于数据、不给买卖建议。输出格式: 以【评注】开头, 只输出评注正文。")
+    out = subprocess.run(
+        ["codex", "exec", "--skip-git-repo-check", "-s", "read-only",
+         "-c", "tools.web_search=true", prompt],
+        capture_output=True, timeout=300, cwd="/tmp").stdout.decode("utf-8", "replace")
+    m = re.findall(r"【评注】[\s\S]{20,1500}?(?=\ntokens used|\Z)", out)
+    return m[-1].strip() if m else ""
+
+
 def main():
     cfg = load_config()
     db = DB(cfg["db_path"])
@@ -145,6 +164,13 @@ def main():
     if open_:
         L.append("持仓: " + "、".join(f"{s}×{n}@{p}" for s, n, p in open_))
 
+    try:  # C 层: LLM 分析师评注 (codex, 失败不影响主报告)
+        c = analyst_commentary("\n".join(L))
+        if c:
+            L.append("")
+            L.append(c)
+    except Exception as e:
+        print("评注生成失败:", e)
     text = "\n".join(L)
     print(text)
     db.conn.execute("CREATE TABLE IF NOT EXISTS weekly_reports"
