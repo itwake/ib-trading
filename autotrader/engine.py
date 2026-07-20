@@ -710,6 +710,88 @@ class Engine:
                     log.exception("执行流水写入失败")
                 self.broker.disconnect()
 
+    @staticmethod
+    def check_order_coverage(lots, positions, pending_sells, trail_orders, now_t, trail_hhmm):
+        """订单哨兵纯逻辑: 返回 issues 列表 (空=健康)。
+        不变量 (出场时段内): ① IB 每股持仓都有在途卖单覆盖 (不裸奔);
+        ② 台账 lot 数量与 IB 持仓一致; ③ 追踪时点+10分钟后, 覆盖单应为 TRAIL (软提示)。
+        时段边界 ±5 分钟不判 (换单过渡期)。lots: 未平 lot 列表; positions: {sym: qty};
+        pending_sells: {sym: 在途卖量}; trail_orders: {sym: 追踪单卖量}。"""
+        issues = []
+        sell_windows = [("04:00", "16:00"), ("20:00", "23:59"), ("00:00", "03:50")]
+        in_window = any(a <= now_t <= b for a, b in sell_windows)
+        boundaries = ["04:00", "09:30", trail_hhmm, "16:00", "20:00", "03:50"]
+
+        def near_boundary(t):
+            tm = int(t[:2]) * 60 + int(t[3:5])
+            for b in boundaries:
+                bm = int(b[:2]) * 60 + int(b[3:5])
+                if abs(tm - bm) <= 5:
+                    return True
+            return False
+
+        exp = {}
+        for l in lots:
+            exp[l["symbol"]] = exp.get(l["symbol"], 0) + l["qty"]
+        # ② 台账 vs IB 持仓 (任何时候都查)
+        for sym, q in sorted(exp.items()):
+            have = int(positions.get(sym, 0))
+            if have != q and not near_boundary(now_t):
+                issues.append(f"{sym}: 台账 {q} 股 vs IB 持仓 {have} 股 (待对账)")
+        if not in_window or near_boundary(now_t):
+            return issues
+        # ① 裸奔检测: 持仓 > 在途卖量
+        for sym in sorted(set(positions) & set(exp)):
+            have, pend = int(positions.get(sym, 0)), int(pending_sells.get(sym, 0))
+            if have > 0 and pend < have:
+                issues.append(f"🚨 {sym}: 持仓 {have} 股仅 {pend} 股有卖单在途 (裸奔 {have - pend} 股)")
+        # ③ 追踪时段的订单类型 (软提示, 手动限价单属合法状态)
+        trail_min = int(trail_hhmm[:2]) * 60 + int(trail_hhmm[3:5])
+        now_min = int(now_t[:2]) * 60 + int(now_t[3:5])
+        if trail_min + 10 <= now_min and now_t <= "16:00":
+            for sym in sorted(set(positions) & set(exp)):
+                if int(positions.get(sym, 0)) > 0 and not trail_orders.get(sym):
+                    issues.append(f"{sym}: 已过追踪时点但覆盖单非 TRAIL (若为手动单可忽略)")
+        return issues
+
+    async def order_watchdog(self):
+        """订单哨兵: 取 IB 实时持仓/挂单 + 台账, 跑一致性校验, 结果写 control 表供面板显示;
+        出现裸奔立即 critical 告警 (去重: 同一问题集合 30 分钟内不重复推)。"""
+        import json as _json
+        c = self.cfg["ib"]
+        rb = Broker({**self.cfg, "ib": {**c, "client_id": c["client_id"] + 1}})
+        try:
+            await rb.connect(retries=1)
+            pos = {p.contract.symbol: int(p.position) for p in await rb.positions()}
+            await rb.ib.reqAllOpenOrdersAsync()
+            pend, trails = {}, {}
+            for t in rb.ib.openTrades():
+                if t.order.action != "SELL":
+                    continue
+                rem = t.orderStatus.remaining
+                q = int(rem) if rem and rem > 0 else int(t.order.totalQuantity)
+                pend[t.contract.symbol] = pend.get(t.contract.symbol, 0) + q
+                if t.order.orderType == "TRAIL":
+                    trails[t.contract.symbol] = trails.get(t.contract.symbol, 0) + q
+        finally:
+            rb.disconnect()
+        now = now_et()
+        tr_off = float(self.cfg["schedule_et"].get("open_trail_offset_min", 1))
+        trail_hhmm = f"{9 + int((30 + tr_off) // 60):02d}:{int((30 + tr_off) % 60):02d}"
+        issues = self.check_order_coverage(self.db.open_lots(), pos, pend, trails,
+                                           now.strftime("%H:%M"), trail_hhmm)
+        verdict = {"ts": now.isoformat(timespec="minutes"), "ok": not issues, "issues": issues}
+        self.db.set_control("watchdog", _json.dumps(verdict, ensure_ascii=False))
+        key = "|".join(issues)
+        naked = [i for i in issues if "裸奔" in i]
+        if naked and (key != getattr(self, "_wd_last", "") or
+                      (now - getattr(self, "_wd_last_t", now)).total_seconds() > 1800):
+            self.notify.send("订单哨兵:\n" + "\n".join(issues), "critical")
+            self._wd_last, self._wd_last_t = key, now
+        elif not issues:
+            self._wd_last = ""
+        return issues
+
     async def heartbeat_loop(self):
         """每 10 分钟探测网关/隧道; 状态变化即告警; 交易时段整点报平安 + 保证金缓冲监控。"""
         from broker import Broker, probe_handshake
@@ -731,6 +813,12 @@ class Engine:
                 open_n = len(self.db.open_lots())
                 self.notify.send(f"心跳: 网关{'正常' if ok else '异常'} | 未平 lot {open_n} | {t:%H:%M ET}")
                 last_beat = t
+            # 订单哨兵: 出场时段内每个心跳周期核一次持仓-挂单-台账一致性
+            if ok and cal.is_trading_day(t.date()) and self.db.open_lots():
+                try:
+                    await self.order_watchdog()
+                except Exception as e:
+                    log.warning("订单哨兵失败: %s", e)
             # 保证金缓冲: RTH 内每 30 分钟查一次
             n += 1
             rth = cal.is_trading_day(t.date()) and (9, 30) <= (t.hour, t.minute) < (16, 0)

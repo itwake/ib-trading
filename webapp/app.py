@@ -128,7 +128,16 @@ def overview():
     open_lots = q("SELECT * FROM lots WHERE state NOT IN ('CLOSED','ERROR') ORDER BY lot_id DESC")
     _sched_details(schedule, open_lots, snap[0] if snap else None)
     gw = probe_handshake(cfg["ib"]["host"], cfg["ib"]["port"], timeout=8)
+    wd = None
+    try:
+        import json as _json
+        row = q("SELECT value FROM control WHERE key='watchdog'")
+        if row:
+            wd = _json.loads(row[0]["value"])
+    except Exception:
+        pass
     return {
+        "watchdog": wd,
         "now_et": now_et().strftime("%Y-%m-%d %H:%M ET"),
         "mode": cfg["mode"],
         "gate_cfg": cfg["gate"],

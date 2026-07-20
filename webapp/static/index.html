@@ -393,7 +393,11 @@ async function loadOverview(){
     '最近闸门':'守护进程最近一次收盘前的闸门判定结果。',
     '闸门规则':'当前配置的阈值，可在「配置」页调整。'
   };
+  const wd = o.watchdog;
+  tips['订单哨兵'] = (wd&&wd.issues&&wd.issues.length) ? wd.issues.join('；')
+    : '每 10 分钟自动核验三方一致性：IB 持仓 × 在途卖单 × 台账——出场时段内不允许裸奔仓位、数量必须吻合、追踪时点后覆盖单应为 TRAIL。发现裸奔立即 Discord 告警。时段切换 ±5 分钟内不判（换单过渡期）。';
   $('#ov-cards').innerHTML = [
+    ['订单哨兵', wd?(wd.ok?'✅ 一致':'⚠️ '+wd.issues.length+' 项'):'—', wd?('核验 '+(wd.ts||'').slice(11,16)):'开盘时段每10分钟'],
     ['净值', s.netliq!=null?fmt$(s.netliq):'—', '快照 '+(s.date||'—')],
     ['持仓市值', s.gross!=null?fmt$(s.gross):'—', (o.open_lots.length)+' 个 lot'],
     ['浮动盈亏(延迟)', `<span class="${cls(unreal)}">${fmt$(unreal)}</span>`, qt&&qt.stale?('缓存 @ '+(qt.as_of||'')):''],
