@@ -436,8 +436,16 @@ class Engine:
     async def do_premarket_sells(self, d):
         await self._resync_lots_with_positions("盘前")
         lines, skips = [], []
+        lots = [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "TRAILING")]
+        # 先撤系统自己的残留卖单: 隔夜场次 03:50 结束后, 已死隔夜单的撤销状态可能尚未
+        # 传播, 防超卖会把它们当在途单 (2026-07-20 实例: 6 只被跳过裸奔)。主动撤单+等待
+        # 消除竞态; 只撤 autotrader 标记的单, 手动单不动 (与 open_trail 同模式)。
+        for lot in lots:
+            await self.broker.cancel_open_sells(lot["symbol"])
+        if lots:
+            await asyncio.sleep(2)
         ctx = await self.broker.sell_context()
-        for lot in [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "TRAILING")]:
+        for lot in lots:
             line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL", ctx, skips)
             if line:
                 self.db.set_lot_state(lot["lot_id"], "PREMARKET")
