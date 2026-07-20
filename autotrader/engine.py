@@ -433,18 +433,30 @@ class Engine:
         if skips:
             self.notify.send("防超卖跳过(已有在途卖单/手动单): " + ", ".join(skips), "warn")
 
+    async def _cancel_sells_and_wait(self, symbols, rounds=8):
+        """撤系统自己的卖单, 并轮询直到这些票的在途卖量清零 (或超时) 后返回快照。
+        固定短等待不可靠: 隔夜僵尸单撤销传播慢 (2026-07-20 盘前 6 只被跳过)、跨客户端
+        撤单 (面板引擎 clientId+2 的单) 更慢 (同日 10:00 又 4 只被跳过)。
+        手动 (非 autotrader) 卖单不会被撤、也不该清零 -> 超时后按防超卖正常缩量/跳过。"""
+        syms = sorted(set(symbols))
+        for s in syms:
+            await self.broker.cancel_open_sells(s)
+        ctx = None
+        for i in range(rounds):
+            await asyncio.sleep(1 if i == 0 else 2)
+            ctx = await self.broker.sell_context()
+            if not any(ctx[1].get(s, 0) for s in syms):
+                return ctx
+        left = {s: ctx[1].get(s) for s in syms if ctx[1].get(s)}
+        log.warning("撤单等待超时, 仍有在途 (可能为手动单, 将按防超卖处理): %s", left)
+        return ctx
+
     async def do_premarket_sells(self, d):
         await self._resync_lots_with_positions("盘前")
         lines, skips = [], []
         lots = [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "TRAILING")]
-        # 先撤系统自己的残留卖单: 隔夜场次 03:50 结束后, 已死隔夜单的撤销状态可能尚未
-        # 传播, 防超卖会把它们当在途单 (2026-07-20 实例: 6 只被跳过裸奔)。主动撤单+等待
-        # 消除竞态; 只撤 autotrader 标记的单, 手动单不动 (与 open_trail 同模式)。
-        for lot in lots:
-            await self.broker.cancel_open_sells(lot["symbol"])
-        if lots:
-            await asyncio.sleep(2)
-        ctx = await self.broker.sell_context()
+        ctx = await self._cancel_sells_and_wait([l["symbol"] for l in lots]) \
+            if lots else await self.broker.sell_context()
         for lot in lots:
             line = await self._staged_sell(lot, self.broker.sell_premarket, "PREMARKET_SELL", ctx, skips)
             if line:
@@ -459,11 +471,8 @@ class Engine:
         await self._resync_lots_with_positions("开盘")
         lines, skips = [], []
         lots = [l for l in self.db.open_lots() if l["state"] in ("FILLED", "OVERNIGHT", "PREMARKET")]
-        for lot in lots:
-            await self.broker.cancel_open_sells(lot["symbol"])  # 只撤系统自己的单
-        if lots:
-            await asyncio.sleep(2)  # 等撤单回报后再取快照
-        ctx = await self.broker.sell_context()
+        ctx = await self._cancel_sells_and_wait([l["symbol"] for l in lots]) \
+            if lots else await self.broker.sell_context()
         for lot in lots:
             qty, pos, pending = self.broker.sellable_from(ctx, lot["symbol"], lot["qty"])
             if qty <= 0:
