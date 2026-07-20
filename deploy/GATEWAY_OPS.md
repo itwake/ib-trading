@@ -35,6 +35,15 @@ Configure → Settings → Lock and Exit → Auto restart，时间设为 **03:52
 
 API → Settings → Trusted IPs 须含 **192.168.8.237**（服务器直连）。
 
+## 4b. Master API Client ID 设为 31（跨客户端撤单授权，5 分钟）
+
+API → Settings → **Master API client ID = 31**。
+
+原因：IB 规定普通 API 客户端只能撤自己下的单；面板手动操作用 clientId 33 下的单，
+守护进程（31）撤不掉（2026-07-20 实例：10:00 换追踪时 4 只被跳过，需手动重跑）。
+把 31 设为 Master 后，守护进程可以看到并撤销所有客户端的单，手动兜底和自动链
+从此无缝衔接。代码侧的撤单+轮询验证（740072d）已就位，此设置是最后一块拼图。
+
 ## 5. 进阶（可选）：IBC 自动拉起
 
 IBC (https://github.com/IbcAlpha/IBC) 可在 Gateway 进程死掉时自动重启并自动登录
