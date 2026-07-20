@@ -124,10 +124,13 @@ class Engine:
                          ("做空比例", lambda: self._tag_short_interest(d, head)),
                          ("增发检索", lambda: self._tag_dilution(d, head)),
                          ("停牌检索", lambda: self._tag_halts(d, head)),
-                         ("夜间环境", lambda: self._tag_night_env(d, candidates))):
+                         ("夜间环境", lambda: self._tag_night_env(d, candidates)),
+                         ("异动归因", lambda: self._tag_news_pulse(d, head))):
             t0 = _time.time()
             try:
-                fn()
+                res = fn()
+                if asyncio.iscoroutine(res):
+                    await res
                 log.info("特征打标[%s] 完成 %.1fs", step, _time.time() - t0)
             except Exception as e:
                 log.warning("候选特征[%s]失败: %s", step, e)
@@ -269,6 +272,50 @@ class Engine:
             self.db.set_watch_features(str(d), t, halted=1 if t.upper() in halted else 0)
         if halted:
             log.info("[%s] 当日停牌名单命中候选: %s", d, sorted(halted & {t for t, _ in head}) or "无")
+
+    NEWS_PROMPT = (
+        '{sym} (US stock) fell {chg}% on {d} during regular US trading. Determine why, using web '
+        'search with at least 2 different queries. Classify: 1=company-specific hard event that day '
+        'or the prior evening (subtype one of: earnings/guidance/downgrade/short-report/clinical/'
+        'offering/legal/contract/other), 2=sector or market-wide selloff with NO company-specific '
+        'news, 3=no news found. Discipline: never invent a reason; if searches surface nothing '
+        'company-specific for that date, answer 2 or 3. Reply ONLY a JSON object: '
+        '{{"class":1|2|3,"type":"...","confidence":"A|B|C","reason":"one sentence"}}')
+
+    async def _tag_news_pulse(self, d, head):
+        """异动归因 (news-pulse, 维度13): 用服务器上已授权的 codex CLI + 网络搜索,
+        判定每只候选的大跌是 ①个股硬事件 ②板块联动 ③查无消息。
+        依据: Chan 2003 (有消息大跌→续跌, 无消息→反弹) —— 证据链最强的分类器;
+        与硬标签 (财报/增发/停牌) 的一致性可反查归因质量。观察不拦截, 逐票降级。"""
+        import json as _json
+        import re as _re
+        sem = asyncio.Semaphore(3)
+        conf_map = {"A": 3, "B": 2, "C": 1}
+
+        async def one(t, chg):
+            prompt = self.NEWS_PROMPT.format(sym=t, chg=chg, d=d)
+            async with sem:
+                try:
+                    p = await asyncio.create_subprocess_exec(
+                        "codex", "exec", "--skip-git-repo-check", "-s", "read-only",
+                        "-c", "tools.web_search=true", prompt,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                        cwd="/tmp")
+                    out, _ = await asyncio.wait_for(p.communicate(), timeout=150)
+                    m = _re.findall(r'\{[^{}]*"class"[^{}]*\}', out.decode("utf-8", "replace"))
+                    if not m:
+                        log.warning("异动归因无输出 %s", t)
+                        return
+                    j = _json.loads(m[-1])
+                    self.db.set_watch_features(
+                        str(d), t, news_class=int(j["class"]),
+                        news_conf=conf_map.get(str(j.get("confidence", "C")).upper(), 1),
+                        news_type=str(j.get("type", ""))[:24],
+                        news_reason=str(j.get("reason", ""))[:200])
+                except Exception as e:
+                    log.warning("异动归因失败 %s: %s", t, e)
+
+        await asyncio.gather(*(one(t, chg) for t, chg in head))
 
     def _tag_night_env(self, d, candidates):
         """夜间环境: VIX3M 期限结构 (VIX/VIX3M>1=近端恐慌, Nagel 2012 反转收益随之上升)

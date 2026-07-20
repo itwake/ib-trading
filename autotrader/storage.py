@@ -65,6 +65,7 @@ class DB:
         "zscore", "gap_pct", "clv", "vs_200dma", "vs_50dma", "vs_52w_high", "last30_pct",
         "sector_chg", "rel_drop", "earn_recent", "earn_next", "si_pct",
         "dilution", "halted",
+        "news_class", "news_conf", "news_type", "news_reason",  # 异动归因 (codex news-pulse)
     )
 
     def __init__(self, path):

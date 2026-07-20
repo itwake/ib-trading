@@ -817,6 +817,9 @@ def watchlist(days: int = 60):
         ("FOMO态", "回测证据 (同上): 事前过热 (>50日线30%+ 且量比≥2) 的大跌命中率最高 (78%) 但左尾最肥 (p5=-12%), 均值期望三组最差; 唯一亮点=FOMO×温和跌的隔夜承接 (+0.99%)。观察实盘验证, 勿单独当信号。",
          lambda r: None if (r.get("vs_50dma") is None or r.get("relvol") is None) else
          ("FOMO态 (过热+放量)" if r["vs_50dma"] >= 30 and r["relvol"] >= 2 else "非FOMO")),
+        ("异动归因", "假设 (Chan 2003, 全链证据最强的分类器): ①个股硬事件的大跌→次日续跌; ③查无消息的大跌→反弹最强; ②板块联动居中。归因由服务器 codex+网络搜索每晚自动完成 (逐票一句话依据存档); 与硬标签(财报/增发/停牌)不一致 = 归因质量红旗。",
+         lambda r: {1: "① 硬事件", 2: "② 板块联动", 3: "③ 查无消息"}.get(
+             int(r["news_class"])) if r.get("news_class") is not None else None),
     ]
     by_tag = []
     for title, hyp, fn in TAGS:
