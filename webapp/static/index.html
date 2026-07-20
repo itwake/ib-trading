@@ -557,6 +557,7 @@ async function loadRuns(){
       r.earn = r.earn_recent==null?null:(r.earn_recent?'📊':'—');
       r.dilu = r.dilution==null?null:(r.dilution?'⚠️':'—');
       r.halt = r.halted==null?null:(r.halted?'⛔':'—');
+      r.fomo = (r.vs_50dma==null||r.relvol==null)?null:((r.vs_50dma>=30&&r.relvol>=2)?'🔥':'—');
     });
     table($('#w-rows'), (wl.rows||[]).slice(0,120), [['date','日期'],['rank','名次'],['symbol','代码'],
       ['sector','板块'],['change_pct','跌幅','%'],
@@ -566,6 +567,7 @@ async function loadRuns(){
       ['last30_pct','尾盘','%','最后30分钟涨跌。尾盘加速跌=日终价格压力（假设：反弹更强）'],
       ['vs_200dma','vs200日线','%','收盘价相对200日均线。上方=趋势中回调，下方=破位'],
       ['rel_drop','vs板块','%','当日跌幅−所属板块ETF涨跌。大幅跑输=独跌（个股信息）'],
+      ['fomo','FOMO','','🔥=事前过热（收盘>50日线30%+ 且量比≥2）。回测：命中率最高但左尾最肥，期望最差——观察验证中'],
       ['earn','财报','','📊=当日或前一交易日出过财报（下跌大概率财报驱动）'],
       ['dilu','增发','','⚠️=近7日向 SEC 提交过增发/货架类文件（424B*/S-1/S-3），反弹或被稀释卖压压制'],
       ['halt','停牌','','⛔=当日出现在 Nasdaq 停牌/LULD 名单，价格发现被延迟'],

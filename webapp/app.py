@@ -810,6 +810,13 @@ def watchlist(days: int = 60):
         ("入场星期", "假设: 周五入场需持仓过周末、扛两天新闻空窗 (BE 做空战周末案例), 跳空风险高于周一~四的常规隔夜。",
          lambda r: "周" + "一二三四五"[datetime.strptime(r["date"], "%Y-%m-%d").weekday()]
          if datetime.strptime(r["date"], "%Y-%m-%d").weekday() < 5 else None),
+        ("跌幅深度", "回测证据 (2026-07, 自建 7,998 事件研究): 单日 ≤-10% 的极深跌 T+1 期望全场最差 (硬消息浓度高), -7~-10% 次之——温和跌幅段或为期望最好区。观察实盘验证; 样本够后可检验 skip_rank 是否该加大。",
+         lambda r: None if r.get("change_pct") is None else
+         ("③ 极深 ≤-10%" if r["change_pct"] <= -10 else
+          ("② 深 -7~-10%" if r["change_pct"] <= -7 else "① 温和 >-7%"))),
+        ("FOMO态", "回测证据 (同上): 事前过热 (>50日线30%+ 且量比≥2) 的大跌命中率最高 (78%) 但左尾最肥 (p5=-12%), 均值期望三组最差; 唯一亮点=FOMO×温和跌的隔夜承接 (+0.99%)。观察实盘验证, 勿单独当信号。",
+         lambda r: None if (r.get("vs_50dma") is None or r.get("relvol") is None) else
+         ("FOMO态 (过热+放量)" if r["vs_50dma"] >= 30 and r["relvol"] >= 2 else "非FOMO")),
     ]
     by_tag = []
     for title, hyp, fn in TAGS:

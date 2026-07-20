@@ -167,6 +167,8 @@ class Engine:
                 }
                 if len(closes) >= 200:
                     feats["vs_200dma"] = round((c / float(closes.iloc[-200:].mean()) - 1) * 100, 1)
+                if len(closes) >= 50:  # FOMO 态判定用 (>50日线30%+, 与回测口径一致)
+                    feats["vs_50dma"] = round((c / float(closes.iloc[-50:].mean()) - 1) * 100, 1)
                 self.db.set_watch_features(str(d), t, **feats)
             except Exception as e:
                 log.warning("趋势形态失败 %s: %s", t, e)

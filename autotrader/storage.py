@@ -62,7 +62,7 @@ class DB:
     # Finviz 免费层 / 趋势与形态 / 事件与风险标签, 语义见面板悬停说明
     WATCH_FEATURES = (
         "perf_w", "perf_m", "perf_ytd", "perf_y", "vol_w", "relvol", "price", "cap_b",
-        "zscore", "gap_pct", "clv", "vs_200dma", "vs_52w_high", "last30_pct",
+        "zscore", "gap_pct", "clv", "vs_200dma", "vs_50dma", "vs_52w_high", "last30_pct",
         "sector_chg", "rel_drop", "earn_recent", "earn_next", "si_pct",
         "dilution", "halted",
     )
