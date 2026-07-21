@@ -1,4 +1,4 @@
-{
+﻿{
   "mode": "dry",
   "ib": { "host": "192.168.8.223", "port": 4001, "client_id": 31, "paper_port": 4002 },
   "gate": { "enabled": true, "vix_min": 17.0, "spy_max_pct": -0.25 },
@@ -8,7 +8,7 @@
     "skip_rank": 1,
     "n_stocks": 10,
     "lot_size": 2,
-    "watch_n": 20
+    "watch_n": 40
   },
   "budget": {
     "nightly_max_usd": 20000,
