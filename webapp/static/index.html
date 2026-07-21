@@ -561,7 +561,7 @@ async function loadRuns(){
       r.earn = r.earn_recent==null?null:(r.earn_recent?'📊':'—');
       r.dilu = r.dilution==null?null:(r.dilution?'⚠️':'—');
       r.halt = r.halted==null?null:(r.halted?'⛔':'—');
-      r.fomo = (r.vs_50dma==null||r.relvol==null)?null:((r.vs_50dma>=30&&r.relvol>=2)?'🔥':'—');
+      r.fomo = (r.vs_50dma==null||r.relvol==null)?null:((r.vs_50dma>=30&&r.relvol>=2)?'🔥':'·');
       r.news = r.news_class==null?null:({1:'①'+(r.news_type||'事件'),2:'②板块',3:'③无消息'}[r.news_class]||'—');
       r.binev = r.binevent==null?null:(r.binevent?'⏰':'—');
       r.judg = !r.pre_verdict?null:(({skip:'⛔',caution:'⚠️',ok:'✓'}[r.pre_verdict]||'')+(r.pre_risk!=null?r.pre_risk:''));
@@ -574,7 +574,7 @@ async function loadRuns(){
       ['last30_pct','尾盘','%','最后30分钟涨跌。尾盘加速跌=日终价格压力（假设：反弹更强）'],
       ['vs_200dma','vs200日线','%','收盘价相对200日均线。上方=趋势中回调，下方=破位'],
       ['rel_drop','vs板块','%','当日跌幅−所属板块ETF涨跌。大幅跑输=独跌（个股信息）'],
-      ['fomo','FOMO','','🔥=事前过热（收盘>50日线30%+ 且量比≥2）。回测：命中率最高但左尾最肥，期望最差——观察验证中'],
+      ['fomo','FOMO','','🔥=事前过热（收盘>50日线30%+ 且量比≥2）；·=已判定非FOMO；—=无数据（07-20 前的历史行缺量比，无法回补）'],
       ['news','归因','','codex 自动异动归因：①硬事件(细分类型) ②板块联动 ③查无消息。Chan 2003：无消息的大跌反弹最强'],
       ['binev','事件⏰','','⏰=未来 2 个交易日内有已排期二元事件（财报/FDA/判决/交割/解禁），持仓期风险不对称'],
       ['judg','裁决','','LLM 预买影子裁决（15:39，买入时点信息）：⛔skip ⚠️caution ✓ok + 风险分 0~10。只记录不执行，攒分中'],
