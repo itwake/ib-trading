@@ -56,15 +56,25 @@ def trail_sim_section(db, lo_s, hi_s):
         return [f"追踪模拟: 样本不足 ({len(lots)} 手)"]
     out = [f"追踪时机模拟 (累计 {len(lots)} 手日内出场样本):"]
     actual = sum((xp / ep - 1) * 100 for _, xp, ep, _, _ in lots) / len(lots)
+    # 当前实盘参数 (动态读取配置, 用户可能随时调整)
+    from common import load_config
+    cfg = load_config()
+    tr_off = float(cfg["schedule_et"].get("open_trail_offset_min", 1))
+    cur_t = f"{9 + int((30 + tr_off) // 60):02d}:{int((30 + tr_off) % 60):02d}"
+    cur_w = float(cfg["exits"]["trail_pct"])
     rows = []
-    for t in ("09:30", "10:00", "11:00"):
+    for t in ("09:30", "09:45", "10:00", "11:00"):
         for w in (0.3, 0.5, 1.0):
             avg = sum((_sim_exit(bars_map[(s, xd)], tp, t, w) / ep - 1) * 100
                       for s, _, ep, tp, xd in lots) / len(lots)
             rows.append((t, w, avg))
-    for t, w, avg in sorted(rows, key=lambda x: -x[2])[:4]:
-        cur = " ← 当前实盘参数" if (t, w) == ("10:00", 0.5) else ""
+    for t, w, avg in sorted(rows, key=lambda x: -x[2])[:5]:
+        cur = " ← 当前实盘参数" if (t, w) == (cur_t, cur_w) else ""
         out.append(f"  {t} 挂 {w}%: 均 {avg:+.2f}% (vs 实际 {avg - actual:+.2f}pp){cur}")
+    cur_avg = next((a for t, w, a in rows if (t, w) == (cur_t, cur_w)), None)
+    if cur_avg is not None and not any((t, w) == (cur_t, cur_w) for t, w, _ in
+                                       sorted(rows, key=lambda x: -x[2])[:5]):
+        out.append(f"  {cur_t} 挂 {cur_w}%: 均 {cur_avg:+.2f}% (vs 实际 {cur_avg - actual:+.2f}pp) ← 当前实盘参数")
     out.append(f"  实际出场基准: {actual:+.2f}%")
     return out
 
