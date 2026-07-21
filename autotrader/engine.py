@@ -143,10 +143,23 @@ class Engine:
             if ex:
                 self.db.set_watch_features(str(d), t, **ex)
 
+    @staticmethod
+    def fomo_score_of(vs_50dma, rvol90, perf_1y):
+        """FOMO 数值分 0-100 (用户 2026-07 探索的加权指数, 按可得数据重归一):
+        动量偏离 40% (高于50日线 60%+ 封顶) + 量能异常 30% (当日量 4×90日均量封顶)
+        + 长期动量/叙事拥挤 30% (一年 +300% 封顶)。全部 yfinance 口径, 历史可回补。
+        参考带: <30 常规; 30-60 升温; >=60 过热 (对应二值 🔥 的邻域)。"""
+        clip = lambda v: max(0.0, min(100.0, v))
+        s1 = clip((vs_50dma or 0) / 60 * 100)
+        s2 = clip(((rvol90 or 1) - 1) / 3 * 100)
+        s3 = clip((perf_1y or 0) / 300 * 100)
+        return round(0.4 * s1 + 0.3 * s2 + 0.3 * s3, 1)
+
     def _tag_trend_shape(self, d, head):
         """趋势位置 (200日均线/52周高) 与当日K线形态 (跳空占比/收盘位置 CLV)。
         依据: George-Hwang 2004 (趋势中回调优于破位); End-of-Day Reversal 2024
-        (收在最低附近的下跌反弹更强)。一次批量下载 1 年日线。"""
+        (收在最低附近的下跌反弹更强)。一次批量下载 1 年日线; 顺算 rvol90 与
+        FOMO 数值分 (fomo_score_of)。"""
         import yfinance as yf
         syms = [t for t, _ in head]
         df = yf.download(syms, period="1y", interval="1d", progress=False,
@@ -173,6 +186,17 @@ class Engine:
                     feats["vs_200dma"] = round((c / float(closes.iloc[-200:].mean()) - 1) * 100, 1)
                 if len(closes) >= 50:  # FOMO 态判定用 (>50日线30%+, 与回测口径一致)
                     feats["vs_50dma"] = round((c / float(closes.iloc[-50:].mean()) - 1) * 100, 1)
+                try:  # FOMO 数值分: 量能 + 动量偏离 + 长期动量, 全 yf 口径可回补
+                    vols = sub["Volume"].iloc[:i + 1].dropna()
+                    if len(vols) >= 60 and float(vols.iloc[-91:-1].mean()) > 0:
+                        feats["rvol90"] = round(float(vols.iloc[-1]) / float(vols.iloc[-91:-1].mean()), 2)
+                    perf_1y = (c / float(closes.iloc[max(0, i - 252)]) - 1) * 100 if i >= 60 else None
+                    if feats.get("vs_50dma") is not None and feats.get("rvol90") is not None \
+                            and perf_1y is not None:
+                        feats["fomo_score"] = self.fomo_score_of(
+                            feats["vs_50dma"], feats["rvol90"], perf_1y)
+                except Exception:
+                    pass
                 self.db.set_watch_features(str(d), t, **feats)
             except Exception as e:
                 log.warning("趋势形态失败 %s: %s", t, e)

@@ -67,6 +67,7 @@ class DB:
     WATCH_FEATURES = (
         "perf_w", "perf_m", "perf_ytd", "perf_y", "vol_w", "relvol", "price", "cap_b",
         "zscore", "gap_pct", "clv", "vs_200dma", "vs_50dma", "vs_52w_high", "last30_pct",
+        "rvol90", "fomo_score",  # 当日量/90日均量 (yf口径, 可回补) 与 FOMO 数值分 0-100
         "sector_chg", "rel_drop", "earn_recent", "earn_next", "si_pct",
         "dilution", "halted",
         "news_class", "news_conf", "news_type", "news_reason",  # 异动归因 (codex news-pulse)

@@ -825,9 +825,10 @@ def watchlist(days: int = 60):
          lambda r: None if r.get("change_pct") is None else
          ("③ 极深 ≤-10%" if r["change_pct"] <= -10 else
           ("② 深 -7~-10%" if r["change_pct"] <= -7 else "① 温和 >-7%"))),
-        ("FOMO态", "回测证据 (同上): 事前过热 (>50日线30%+ 且量比≥2) 的大跌命中率最高 (78%) 但左尾最肥 (p5=-12%), 均值期望三组最差; 唯一亮点=FOMO×温和跌的隔夜承接 (+0.99%)。观察实盘验证, 勿单独当信号。",
-         lambda r: None if (r.get("vs_50dma") is None or r.get("relvol") is None) else
-         ("FOMO态 (过热+放量)" if r["vs_50dma"] >= 30 and r["relvol"] >= 2 else "非FOMO")),
+        ("FOMO分", "数值化 FOMO 指数 0-100 (用户设计的加权模型): 动量偏离40% (>50日线60%封顶) + 量能异常30% (当日量4×90日均量封顶) + 长期动量30% (一年+300%封顶), 全 yfinance 口径、历史可回补。回测证据: 过热股大跌命中率最高但左尾最肥、期望最差; FOMO×温和跌隔夜承接最强。",
+         lambda r: None if r.get("fomo_score") is None else
+         ("③ 过热 ≥60" if r["fomo_score"] >= 60 else
+          ("② 升温 30~60" if r["fomo_score"] >= 30 else "① 常规 <30"))),
         ("异动归因", "假设 (Chan 2003, 全链证据最强的分类器): ①个股硬事件的大跌→次日续跌; ③查无消息的大跌→反弹最强; ②板块联动居中。归因由服务器 codex+网络搜索每晚自动完成 (逐票一句话依据存档); 与硬标签(财报/增发/停牌)不一致 = 归因质量红旗。",
          lambda r: {1: "① 硬事件", 2: "② 板块联动", 3: "③ 查无消息"}.get(
              int(r["news_class"])) if r.get("news_class") is not None else None),
