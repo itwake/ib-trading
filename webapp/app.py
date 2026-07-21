@@ -110,6 +110,7 @@ def _sched_details(schedule, open_lots, snap):
         "overnight_sells": f"挂 OVERNIGHT 场所限价卖单（防超卖清点后，+{ex['overnight_target_pct']}% 起、市价更高则跟随抬价）：{lots_line}",
         "premarket_sells": f"盘前挂 SMART 限价卖单（outsideRth，同价规则）：{lots_line}",
         "open_trail": f"撤系统限价卖单，改挂 {ex['trail_pct']}% 追踪卖出：{trail_line}",
+        "pre_attrib": "预买影子裁决（LLM）：用买入时点可知的信息对候选归因并给 skip/caution/ok 裁决——只记录不执行，攒 4~8 周记分后再决定是否升级为过滤规则",
         "midday_reconcile": "午间对账：固化上午成交并回填平仓（上海时区网关的成交查询窗口 12:00 ET 翻页，须赶在此前）",
         "daily_report": "与 IB 对账（回填真实卖出价与盈亏并播报）→ 净值快照 → Discord 日报 → 分钟线存档 → 候选追踪回填",
     }
@@ -584,10 +585,11 @@ async def action_flatten():
     return await _run_manual("一键清仓 (全部市价卖出)", run)
 
 
-EV_ACT = {"gate_check": "闸门判定", "build_plan": "选股与预算", "submit_moc": "提交 MOC 买单",
-          "confirm_fills": "成交入台账", "overnight_sells": "挂隔夜限价卖单",
-          "premarket_sells": "挂盘前限价卖单", "open_trail": "改挂追踪卖单",
-          "midday_reconcile": "午间对账", "daily_report": "对账与日报"}
+EV_ACT = {"gate_check": "闸门判定", "build_plan": "选股与预算", "pre_attrib": "预买影子裁决",
+          "submit_moc": "提交 MOC 买单", "confirm_fills": "成交入台账",
+          "overnight_sells": "挂隔夜限价卖单", "premarket_sells": "挂盘前限价卖单",
+          "open_trail": "改挂追踪卖单", "midday_reconcile": "午间对账",
+          "daily_report": "对账与日报"}
 ORDER_ACT = {"MOC_BUY": "提交 MOC 买单", "OVERNIGHT_SELL": "挂隔夜限价卖单",
              "PREMARKET_SELL": "挂盘前限价卖单", "TRAIL_SELL": "挂追踪卖单"}
 
@@ -831,6 +833,9 @@ def watchlist(days: int = 60):
              int(r["news_class"])) if r.get("news_class") is not None else None),
         ("二元事件前瞻", "假设: 持仓窗口内有已排期二元事件 (财报/FDA/判决/交割/解禁) 的候选, 隔夜风险不对称 (全年审计财报单净亏 -$833 的推广)。归因时由 codex 顺路检查未来 2 个交易日。",
          lambda r: None if r.get("binevent") is None else ("有已排期事件" if r["binevent"] else "无排期事件")),
+        ("LLM预买裁决", "影子判断记分板 (维度15): 15:39 用买入时点可知的信息, LLM 对候选给出 skip/caution/ok 裁决与 0~10 风险分——只记录、不执行。假设: skip 桶次日表现显著更差。连续 4~8 周成立才升级为过滤规则 (届时递补机制自动补位); prompt 版本 pv 变更后分数重新起算。",
+         lambda r: {"skip": "⛔ skip", "caution": "⚠️ caution", "ok": "✓ ok"}.get(
+             str(r.get("pre_verdict") or "").lower()) if r.get("pre_verdict") else None),
     ]
     by_tag = []
     for title, hyp, fn in TAGS:

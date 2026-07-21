@@ -564,6 +564,7 @@ async function loadRuns(){
       r.fomo = (r.vs_50dma==null||r.relvol==null)?null:((r.vs_50dma>=30&&r.relvol>=2)?'🔥':'—');
       r.news = r.news_class==null?null:({1:'①'+(r.news_type||'事件'),2:'②板块',3:'③无消息'}[r.news_class]||'—');
       r.binev = r.binevent==null?null:(r.binevent?'⏰':'—');
+      r.judg = !r.pre_verdict?null:(({skip:'⛔',caution:'⚠️',ok:'✓'}[r.pre_verdict]||'')+(r.pre_risk!=null?r.pre_risk:''));
     });
     table($('#w-rows'), (wl.rows||[]).slice(0,120), [['date','日期'],['rank','名次'],['symbol','代码'],
       ['sector','板块'],['change_pct','跌幅','%'],
@@ -576,6 +577,7 @@ async function loadRuns(){
       ['fomo','FOMO','','🔥=事前过热（收盘>50日线30%+ 且量比≥2）。回测：命中率最高但左尾最肥，期望最差——观察验证中'],
       ['news','归因','','codex 自动异动归因：①硬事件(细分类型) ②板块联动 ③查无消息。Chan 2003：无消息的大跌反弹最强'],
       ['binev','事件⏰','','⏰=未来 2 个交易日内有已排期二元事件（财报/FDA/判决/交割/解禁），持仓期风险不对称'],
+      ['judg','裁决','','LLM 预买影子裁决（15:39，买入时点信息）：⛔skip ⚠️caution ✓ok + 风险分 0~10。只记录不执行，攒分中'],
       ['earn','财报','','📊=当日或前一交易日出过财报（下跌大概率财报驱动）'],
       ['dilu','增发','','⚠️=近7日向 SEC 提交过增发/货架类文件（424B*/S-1/S-3），反弹或被稀释卖压压制'],
       ['halt','停牌','','⛔=当日出现在 Nasdaq 停牌/LULD 名单，价格发现被延迟'],

@@ -53,6 +53,7 @@ def todays_schedule(cfg, d):
     sched = [
         ("gate_check", close - timedelta(minutes=27)),
         ("build_plan", close - timedelta(minutes=22)),
+        ("pre_attrib", close - timedelta(minutes=21)),  # 预买影子裁决 (LLM, 只记录不执行)
         ("submit_moc", close - timedelta(minutes=15)),
         ("confirm_fills", close + timedelta(minutes=10)),
         ("overnight_sells", datetime(prev.year, prev.month, prev.day, 20, 0, tzinfo=ET)

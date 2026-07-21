@@ -71,6 +71,7 @@ class DB:
         "dilution", "halted",
         "news_class", "news_conf", "news_type", "news_reason",  # 异动归因 (codex news-pulse)
         "binevent", "binevent_desc",  # 持仓窗口内已排期二元事件 (归因顺路检查)
+        "pre_class", "pre_verdict", "pre_risk", "pre_reason", "pre_pv",  # 预买影子裁决 (15:39)
     )
 
     def __init__(self, path):

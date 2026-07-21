@@ -117,7 +117,8 @@ class Engine:
         # ---- 观察特征打标 (每步独立降级, 任何一步失败不影响其他) ----
         import time as _time
         log.info("[%s] 特征打标开始: %d 候选, finviz明细 %d 条", d, len(head), len(details or {}))
-        for step, fn in (("finviz特征", lambda: self._tag_finviz(d, head, details or {})),
+        for step, fn in (("预买裁决落库", lambda: self._tag_pre_judg(d)),
+                         ("finviz特征", lambda: self._tag_finviz(d, head, details or {})),
                          ("趋势形态", lambda: self._tag_trend_shape(d, head)),
                          ("板块对照", lambda: self._tag_sector_rel(d, head)),
                          ("财报标签", lambda: self._tag_earnings(d, head)),
@@ -286,6 +287,85 @@ class Engine:
         '{{"class":1|2|3,"type":"...","confidence":"A|B|C","reason":"one sentence",'
         '"binary_event":true|false,"binary_desc":"short description or empty"}}')
 
+    async def _codex_json(self, prompt, timeout=150):
+        """调用服务器已授权的 codex CLI (只读沙箱+网络搜索), 提取最后一个含 class 键的
+        扁平 JSON。所有 LLM 判断的统一入口: 结构化输出, 失败返回 None。"""
+        import json as _json
+        import re as _re
+        p = await asyncio.create_subprocess_exec(
+            "codex", "exec", "--skip-git-repo-check", "-s", "read-only",
+            "-c", "tools.web_search=true", prompt,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, cwd="/tmp")
+        out, _ = await asyncio.wait_for(p.communicate(), timeout=timeout)
+        m = _re.findall(r'\{[^{}]*"class"[^{}]*\}', out.decode("utf-8", "replace"))
+        return _json.loads(m[-1]) if m else None
+
+    PRE_JUDG_PV = 1  # 裁决 prompt 版本 (改版必须 +1, 否则跨期分数不可比)
+    PRE_PROMPT = (
+        'It is about 15:40 ET on {d} (US market still open). {sym} is down {chg}% today intraday. '
+        'A systematic mean-reversion strategy will buy it at today\'s 16:00 closing auction and '
+        'exit tomorrow (+1.5% limit overnight/premarket, trailing stop intraday). Using web '
+        'search (>=2 queries, ONLY information already public right now): '
+        '(a) attribute today\'s drop: 1=company-specific hard event (earnings/guidance/downgrade/'
+        'short-report/clinical/offering/legal/contract/other), 2=sector or market-wide, 3=no news '
+        'found — never invent a reason; '
+        '(b) judge THIS specific overnight-bounce trade: "skip" = clear hard catalyst likely to '
+        'keep repricing, or scheduled binary event within 2 trading days, or active short attack; '
+        '"caution" = mixed evidence; "ok" = liquidity/sector-driven drop with no landmines; '
+        '(c) risk score 0-10 (10=worst). Reply ONLY JSON: '
+        '{{"class":1|2|3,"type":"...","verdict":"skip|caution|ok","risk":0,"reason":"one sentence"}}')
+
+    async def do_pre_attrib(self, d):
+        """预买影子裁决 (15:39, 提交前): 用买入时点可知的信息, LLM 对候选归因并给出
+        skip/caution/ok 裁决 + 0~10 风险分。只记录不执行 (判断先记分、后掌权);
+        整体硬超时 270s, 失败/超时一律放行, 不影响 15:45 提交。"""
+        if not self.plan:
+            return
+        cands = list(getattr(self, "_watch_candidates", None) or [])
+        chg = {t: c for t, c in cands}
+        sc = self.cfg["screener"]
+        syms = [t for t, _ in cands[:sc["skip_rank"] + sc["n_stocks"] + 5]]
+        for t, _s, _p in self.plan:  # 计划内的必须覆盖
+            if t not in syms:
+                syms.append(t)
+        sem = asyncio.Semaphore(5)
+        out = {}
+
+        async def one(t):
+            async with sem:
+                try:
+                    j = await self._codex_json(
+                        self.PRE_PROMPT.format(sym=t, chg=chg.get(t, "?"), d=d), timeout=140)
+                    if j and str(j.get("verdict", "")).lower() in ("skip", "caution", "ok"):
+                        out[t] = j
+                except Exception as e:
+                    log.warning("预买裁决失败 %s: %s", t, e)
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*(one(t) for t in syms)), timeout=270)
+        except asyncio.TimeoutError:
+            log.warning("预买裁决整体超时, 完成 %d/%d", len(out), len(syms))
+        self._pre_judg = dict(out)
+        bought = {t for t, _s, _p in self.plan}
+        skips = [f"{t}(风险{j.get('risk')})" for t, j in out.items()
+                 if str(j.get("verdict")).lower() == "skip" and t in bought]
+        self.notify.send(f"[{d}] 预买影子裁决: {len(out)}/{len(syms)} 完成"
+                         + (f"；LLM 建议跳过(仅记录未执行): {', '.join(skips)}" if skips
+                            else "；买入名单无跳过建议"))
+
+    def _tag_pre_judg(self, d):
+        """把 15:39 的影子裁决落进 watchlist (行在 16:20 add_watch 后才存在)。"""
+        pj = getattr(self, "_pre_judg", None) or {}
+        for t, j in pj.items():
+            self.db.set_watch_features(
+                str(d), t, pre_class=int(j.get("class") or 0) or None,
+                pre_verdict=str(j.get("verdict", "")).lower()[:8],
+                pre_risk=float(j.get("risk")) if j.get("risk") is not None else None,
+                pre_reason=str(j.get("reason", ""))[:200], pre_pv=self.PRE_JUDG_PV)
+        if pj:
+            log.info("[%s] 预买裁决落库 %d 只", d, len(pj))
+        self._pre_judg = None
+
     async def _tag_news_pulse(self, d, head):
         """异动归因 (news-pulse, 维度13): 用服务器上已授权的 codex CLI + 网络搜索,
         判定每只候选的大跌是 ①个股硬事件 ②板块联动 ③查无消息。
@@ -300,17 +380,10 @@ class Engine:
             prompt = self.NEWS_PROMPT.format(sym=t, chg=chg, d=d)
             async with sem:
                 try:
-                    p = await asyncio.create_subprocess_exec(
-                        "codex", "exec", "--skip-git-repo-check", "-s", "read-only",
-                        "-c", "tools.web_search=true", prompt,
-                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                        cwd="/tmp")
-                    out, _ = await asyncio.wait_for(p.communicate(), timeout=150)
-                    m = _re.findall(r'\{[^{}]*"class"[^{}]*\}', out.decode("utf-8", "replace"))
-                    if not m:
+                    j = await self._codex_json(prompt, timeout=150)
+                    if j is None:
                         log.warning("异动归因无输出 %s", t)
                         return
-                    j = _json.loads(m[-1])
                     self.db.set_watch_features(
                         str(d), t, news_class=int(j["class"]),
                         news_conf=conf_map.get(str(j.get("confidence", "C")).upper(), 1),
@@ -707,6 +780,7 @@ class Engine:
     ACTIONS = {
         "gate_check": None,  # 特殊处理
         "build_plan": "do_build_plan",
+        "pre_attrib": "do_pre_attrib",
         "submit_moc": "do_submit_moc",
         "confirm_fills": "do_confirm_fills",
         "overnight_sells": "do_overnight_sells",
@@ -719,7 +793,7 @@ class Engine:
     # 事件错过后仍值得补执行的时间窗 (秒)。买入链严格准时 (MOC 有截止), 卖出链宽容自愈。
     GRACE = {"overnight_sells": 7 * 3600, "premarket_sells": 5 * 3600, "open_trail": 6 * 3600,
              "midday_reconcile": 2 * 3600, "confirm_fills": 4 * 3600, "daily_report": 12 * 3600,
-             "submit_moc": 120}
+             "submit_moc": 120, "pre_attrib": 240}
 
     async def run_day(self, d, from_now_only=True):
         """执行交易日 d 的事件表。买入链在闸门拦截时跳过, 卖出链始终执行 (照顾已有持仓)。"""
