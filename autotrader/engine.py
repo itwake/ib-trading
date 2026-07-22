@@ -899,6 +899,19 @@ class Engine:
              "midday_reconcile": 2 * 3600, "confirm_fills": 4 * 3600, "daily_report": 12 * 3600,
              "submit_moc": 120, "pre_attrib": 240}
 
+    def _reload_cfg(self):
+        """热加载配置。**先读后换**: 读失败 (如面板正在写入 config.json) 保持原配置不动 —
+        旧写法 clear() 后再 update(load_config()) 一旦读取抛错就把活配置清空了。"""
+        try:
+            from common import load_config
+            new = load_config()
+        except Exception as e:
+            log.warning("配置热加载失败, 沿用当前配置: %s", e)
+            return
+        if new:
+            self.cfg.clear()
+            self.cfg.update(new)
+
     async def run_day(self, d, from_now_only=True):
         """执行交易日 d 的事件表。买入链在闸门拦截时跳过, 卖出链始终执行 (照顾已有持仓)。"""
         sched = cal.todays_schedule(self.cfg, d)
@@ -912,6 +925,10 @@ class Engine:
             if wait > 0:
                 log.info("等待 %s @ %s (%.0f 分钟)", name, ts.strftime("%H:%M ET"), wait / 60)
                 await asyncio.sleep(wait)
+            # 每步执行前重读配置: run_day 要跑到收盘后才返回, 只在循环外热加载的话,
+            # 盘中在面板改的参数当天全部不生效 (今晚的裁决/预算等要等到明天)。
+            # 今日时刻表已在入口算定, 卖出链时点的改动仍需重启才重排。
+            self._reload_cfg()
             t0 = now_et().isoformat(timespec="seconds")
             self.notify.buffer = []
             status = "ok"
@@ -1085,12 +1102,7 @@ class Engine:
         self.notify.send(f"autotrader 启动 (mode={self.cfg['mode']}, 版本 {ver})")
         asyncio.create_task(self.heartbeat_loop())
         while True:
-            try:  # 热加载配置 (面板改动即生效; 原地更新保持引用)
-                from common import load_config
-                self.cfg.clear()
-                self.cfg.update(load_config())
-            except Exception as e:
-                log.warning("配置热加载失败: %s", e)
+            self._reload_cfg()
             today = now_et().date()
             if cal.is_trading_day(today) and now_et() < cal.market_close_et(today) + timedelta(minutes=30):
                 d = today

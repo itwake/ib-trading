@@ -446,8 +446,13 @@ async def set_config(updates: dict):
             changed.append(f"{path}={val if 'webhook' not in path else '(已更新)'}")
     if not changed:
         return {"ok": True, "result": "无变更"}
-    with open(path_cfg, "w", encoding="utf-8") as f:
+    # 原子写: 守护进程随时可能在读 config.json, 半截文件会让它读到坏 JSON
+    tmp = path_cfg + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         _json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path_cfg)
     cfg.clear()
     cfg.update(load_config())
     conn = sqlite3.connect(cfg["db_path"])
@@ -461,7 +466,9 @@ async def set_config(updates: dict):
     except Exception:
         pass
     ib_changed = any(c.startswith("ib.") for c in changed)
-    tail = "。守护进程将在下一循环生效，或点「重启守护进程」立即生效。"
+    tail = "。守护进程在执行下一个动作前会重读配置，因此对今天尚未执行的步骤即时生效。"
+    if any(c.startswith("schedule_et.") for c in changed):
+        tail += "⚠️ 但今日时刻表已在开机时算定：改动执行时点要今天就重排，须点「重启守护进程」。"
     if ib_changed:
         tail = ("。⚠️ IB 连接参数已改：面板的手动操作/报价会立即用新地址；"
                 "守护进程会在下一个动作自动用新地址连接，但为确保当前会话切换，建议点「重启守护进程」。")

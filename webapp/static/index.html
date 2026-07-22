@@ -189,10 +189,10 @@
   <section id="config" class="section">
     <div id="cfg-form"></div>
     <div class="filters" style="margin-top:16px;">
-      <button class="btn safe" id="cfg-save" data-tip="校验并写入服务器 config.json；变更会记录到事件日志并推送 Discord。">保存配置</button>
+      <button class="btn safe" id="cfg-save" data-tip="校验并写入服务器 config.json；变更会记录到事件日志并推送 Discord。守护进程每执行一步前重读配置，故对今天尚未跑的步骤即时生效；唯有「执行时点」的改动因今日时刻表已算定，需重启才在今天重排。">保存配置</button>
       <button class="btn" id="cfg-restart" data-tip="守护进程本来会在下一个循环自动热加载新配置；点这里立即重启使其马上生效。不影响已挂在交易所的订单。">重启守护进程（立即生效）</button>
     </div>
-    <div class="card" style="margin-top:12px;"><pre id="cfg-log" style="margin:0; font-size:12px; white-space:pre-wrap;">修改会写入 config.json、记录事件并推送 Discord。守护进程每个循环自动热加载，或点重启立即生效。</pre></div>
+    <div class="card" style="margin-top:12px;"><pre id="cfg-log" style="margin:0; font-size:12px; white-space:pre-wrap;">修改会写入 config.json、记录事件并推送 Discord。守护进程在每个动作执行前重读配置，故对今天尚未执行的步骤即时生效；「执行时点」类改动今日已排好班，需重启才在今天重排。</pre></div>
   </section>
   <section id="help" class="section">
     <div class="filters"><button class="btn primary" id="tour-btn">▶ 开始新手引导（逐页讲解）</button></div>
