@@ -728,6 +728,14 @@ const CFG_GROUPS = [
     ['schedule_et.premarket_sells_offset_min','挂盘前限价单','锚点=盘前时段开始 04:00 ET。5＝04:05 挂单。'],
     ['schedule_et.open_trail_offset_min','改挂追踪单','锚点=开盘 09:30 ET。-10＝09:20（开盘前 10 分钟，撤限价改挂追踪，开盘即生效）；10＝09:40（开盘后 10 分钟才切换，给盘前限价多一点成交窗口）。'],
     ['schedule_et.midday_reconcile_offset_min','午间对账','锚点=开盘 09:30 ET。145＝11:55。上海时区网关的成交查询窗口在 12:00 ET 翻页，此步必须在翻页前跑完，把上午的追踪单成交固化进台账，否则日报查不到。上限 148（=11:58）。']]],
+  ['LLM 预买裁决（维度15，15:39 买入前跑）', [
+    ['pre_judg.apply','启用否决（关=只记分）','关闭＝LLM 裁决只记录进观察面板、不改变买入名单（2026-07-21 前的行为）；开启＝达到否决线的 skip 会被剔除并递补。治理原则：LLM 只判断事实，动作由下面这条确定性规则执行。'],
+    ['pre_judg.veto_risk_min','否决风险线（≥ 则剔除）','裁决为 skip 且风险分达到该值才否决。依据：2026-07-21 首夜唯一风险10（PEGA，理由=次晨财报）次日 -13.7%＝当日亏损的 87%；风险8 那组含 HAL/TENB 两只止盈，故起步线设 9。调低＝更激进过滤（可能误伤会反弹的票），调高到 10＝只拦最确信的。'],
+    ['pre_judg.veto_max_n','每晚否决上限（只）','限定 LLM 对当晚计划的影响上界，防止一次判断失常清空名单。0＝不否决（等同关闭启用开关，但裁决仍记分）。'],
+    ['pre_judg.extra_n','裁决覆盖额外名数','除买入窗口外再往下多判几名候选：它们是递补的来源，先判过才能在否决发生时安全顶上。总覆盖＝跳过名次＋选股数＋此值。调大＝更全但更慢（每票约 15 秒）。'],
+    ['pre_judg.concurrency','并发判断数','同时跑几个 codex 查询。服务器与守护进程共用一台机器，5 是实测稳定值；调大提速但可能挤占资源。'],
+    ['pre_judg.call_timeout_s','单票超时（秒）','单只股票的裁决查询上限，超时即放弃该票（不影响其他票）。'],
+    ['pre_judg.overall_timeout_s','整体超时（秒）','全部裁决的总时限。安全网：实际用时还会被"距 MOC 提交的剩余时间−45 秒"硬钳制，所以这里填多大都不可能推迟买入；来不及时自动跳过裁决、买入照常。']]],
   ['风控与通知', [
     ['risk.cushion_alert_pct','保证金缓冲告警线 %','可用资金/净值低于该比例时，盘中每 2 小时推一次强平预警。'],
     ['notify.heartbeat_minutes','心跳间隔 (分钟)','交易时段定时报平安的间隔；0＝关闭心跳（网关断线告警不受影响）。'],
@@ -736,23 +744,38 @@ const CFG_GROUPS = [
     ['flex.token','Flex Web Service Token','IBKR 网页 → Performance & Reports → Settings → FlexWeb Service → 生成 token 后粘贴到此。显示时打码。'],
     ['flex.query_id','Flex Query ID','IBKR 网页 → Performance & Reports → Flex Queries → 新建 Trades 查询（CSV 格式，含 Symbol/TradeDate/Quantity/TradePrice/Buy-Sell/IBCommission 列，期间选 Last 30 days）→ 记下 Query ID 填到此。配好后每周六 20:30 自动对账并推送结果。']]],
 ];
-let cfgLoaded = {};
+let cfgLoaded = {}, cfgSpecs = {};
+/* 控件按服务端下发的类型规格生成: bool→勾选框, enum→下拉, num/int→带范围的数字框。
+   任何 EDITABLE 里有、CFG_GROUPS 里漏掉的键会自动进「其他」组显示——
+   杜绝"新增了可配项但面板上看不见"(2026-07-22 pre_judg 即如此)。 */
+function cfgInput(key, v){
+  const sp = cfgSpecs[key] || {};
+  if (sp.kind === 'enum')
+    return `<select data-k="${key}">${(sp.choices||[]).map(c=>`<option value="${c}" ${v===c?'selected':''}>${c}</option>`).join('')}</select>`;
+  if (sp.kind === 'bool')
+    return `<input type="checkbox" data-k="${key}" ${v?'checked':''} style="width:18px;height:18px;">`;
+  if (sp.kind === 'num' || sp.kind === 'int'){
+    const step = sp.kind === 'int' ? 1 : 'any';
+    return `<input type="number" data-k="${key}" value="${v==null?'':v}" min="${sp.min}" max="${sp.max}" step="${step}" style="width:100%;">`
+      + `<div style="color:var(--muted);font-size:11px;margin-top:3px;">范围 ${sp.min} ~ ${sp.max}</div>`;
+  }
+  return `<input data-k="${key}" value="${v==null?'':v}" style="width:100%;">`;
+}
 async function loadConfig(){
   const d = await safeJ('/api/config');
   if (!d){ $('#cfg-form').innerHTML = '<div class="card">配置接口不可用</div>'; return; }
-  cfgLoaded = d.fields;
+  cfgLoaded = d.fields; cfgSpecs = d.specs || {};
   let html = `<div class="card" style="margin-bottom:14px;" data-tip="只改变本浏览器里时间的显示方式（事件表、倒计时）。服务器调度始终按交易所时间，不受影响。"><div class="k">显示时区（仅影响本浏览器）</div>
     <select id="tz-sel" style="margin-top:6px;">
     ${Object.entries(TZS).map(([k,v])=>`<option value="${k}" ${getTz()===k?'selected':''}>${v}${k!=='local'?' ('+k+')':''}</option>`).join('')}
     </select></div>`;
-  for (const [title, fields] of CFG_GROUPS){
+  const groups = CFG_GROUPS.map(([t,f])=>[t,f.slice()]);
+  const orphans = Object.keys(cfgSpecs).filter(k => !CFG_GROUPS.some(([,f])=>f.some(([key])=>key===k)));
+  if (orphans.length) groups.push(['其他（未分组，自动显示）',
+    orphans.map(k=>[k, k, '本项在服务端可配但页面未编排说明文字，已自动列出以免遗漏。'])]);
+  for (const [title, fields] of groups){
     html += `<h3>${title}</h3><div class="cards">` + fields.map(([key,label,tip])=>{
-      const v = cfgLoaded[key];
-      let input;
-      if (key==='mode') input = `<select data-k="${key}"><option value="dry" ${v==='dry'?'selected':''}>dry</option><option value="live" ${v==='live'?'selected':''}>live</option></select>`;
-      else if (key==='gate.enabled') input = `<input type="checkbox" data-k="${key}" ${v?'checked':''} style="width:18px;height:18px;">`;
-      else input = `<input data-k="${key}" value="${v==null?'':v}" style="width:100%;">`;
-      return `<div class="card" data-tip="${tip||''}"><div class="k">${label}</div><div style="margin-top:6px;">${input}</div></div>`;
+      return `<div class="card" data-tip="${tip||''}"><div class="k">${label}</div><div style="margin-top:6px;">${cfgInput(key, cfgLoaded[key])}</div></div>`;
     }).join('') + '</div>';
   }
   $('#cfg-form').innerHTML = html;

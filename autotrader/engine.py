@@ -342,6 +342,25 @@ class Engine:
         '{{"class":1|2|3,"type":"...","verdict":"skip|caution|ok","risk":0,"reason":"one sentence"}}')
 
     @staticmethod
+    def pre_attrib_budget_of(want_s, secs_to_moc, margin_s=45.0, floor_s=30.0):
+        """裁决可用时长 = min(配置值, 距 MOC 提交的余量 - 安全边际); 不足 floor 返回 0 (跳过)。
+        MOC 有交易所截止时间, 观察层晚一秒都不许挤占提交窗口 —— 面板上把超时配多大
+        都不可能推迟买入 (硬不变量由代码保证, 不靠用户填对数字)。"""
+        avail = secs_to_moc - margin_s
+        if avail < floor_s:
+            return 0.0
+        return max(0.0, min(float(want_s), avail))
+
+    def _pre_attrib_budget(self, d, want_s):
+        try:
+            sched = dict(cal.todays_schedule(self.cfg, d))
+            secs = (sched["submit_moc"] - now_et()).total_seconds()
+        except Exception as e:  # 取不到时刻表: 退回配置值 (原行为)
+            log.warning("裁决时间预算计算失败, 用配置值 %ss: %s", want_s, e)
+            return float(want_s)
+        return self.pre_attrib_budget_of(want_s, secs)
+
+    @staticmethod
     def pick_pre_vetoes(verdicts, plan_syms, rank, risk_min, max_n):
         """确定性否决遴选 (LLM 只出判断, 动作由本规则执行):
         verdict==skip 且 risk>=risk_min 者入围; 计划内优先、再按风险分降序、
@@ -370,27 +389,33 @@ class Engine:
         cands = list(getattr(self, "_watch_candidates", None) or [])
         chg = {t: c for t, c in cands}
         sc = self.cfg["screener"]
-        syms = [t for t, _ in cands[:sc["skip_rank"] + sc["n_stocks"] + 8]]
+        pj = self.cfg.get("pre_judg") or {}
+        budget = self._pre_attrib_budget(d, float(pj.get("overall_timeout_s", 270)))
+        if budget <= 0:  # 离 MOC 截止太近 (迟到补执行等): 观察层永不挤占买入
+            self.notify.send(f"[{d}] 距 MOC 提交不足安全边际, 跳过预买裁决 (买入照常)", "warn")
+            return
+        syms = [t for t, _ in cands[:sc["skip_rank"] + sc["n_stocks"] + int(pj.get("extra_n", 8))]]
         for t, _s, _p in self.plan:  # 计划内的必须覆盖
             if t not in syms:
                 syms.append(t)
-        sem = asyncio.Semaphore(5)
+        sem = asyncio.Semaphore(max(1, int(pj.get("concurrency", 5))))
+        call_to = min(float(pj.get("call_timeout_s", 140)), budget)
         out = {}
 
         async def one(t):
             async with sem:
                 try:
                     j = await self._codex_json(
-                        self.PRE_PROMPT.format(sym=t, chg=chg.get(t, "?"), d=d), timeout=140)
+                        self.PRE_PROMPT.format(sym=t, chg=chg.get(t, "?"), d=d), timeout=call_to)
                     if j and str(j.get("verdict", "")).lower() in ("skip", "caution", "ok"):
                         out[t] = j
                 except Exception as e:
                     log.warning("预买裁决失败 %s: %s", t, e)
 
         try:
-            await asyncio.wait_for(asyncio.gather(*(one(t) for t in syms)), timeout=270)
+            await asyncio.wait_for(asyncio.gather(*(one(t) for t in syms)), timeout=budget)
         except asyncio.TimeoutError:
-            log.warning("预买裁决整体超时, 完成 %d/%d", len(out), len(syms))
+            log.warning("预买裁决整体超时(预算 %.0fs), 完成 %d/%d", budget, len(out), len(syms))
         self._pre_judg = dict(out)
         self._pre_vetoed = []
         pj = self.cfg.get("pre_judg") or {}

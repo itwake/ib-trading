@@ -365,6 +365,10 @@ EDITABLE = {
     "pre_judg.apply": ("bool",),
     "pre_judg.veto_risk_min": ("num", 5, 10),
     "pre_judg.veto_max_n": ("int", 0, 10),
+    "pre_judg.extra_n": ("int", 0, 30),
+    "pre_judg.concurrency": ("int", 1, 10),
+    "pre_judg.call_timeout_s": ("num", 20, 300),
+    "pre_judg.overall_timeout_s": ("num", 30, 300),
     "risk.cushion_alert_pct": ("num", 1, 50),
     "notify.heartbeat_minutes": ("int", 0, 1440),
     "notify.discord_webhook": ("str",),
@@ -404,7 +408,17 @@ def get_config():
         out["notify.discord_webhook"] = out["notify.discord_webhook"][:45] + "…(已设置)"
     if out.get("flex.token"):
         out["flex.token"] = out["flex.token"][:6] + "…(已设置)"
-    return {"fields": out}
+    # 类型规格随值一起下发: 前端据此渲染控件 (勾选框/下拉/带范围的数字框),
+    # 不再靠页面里硬编码的字段表猜类型 —— 新增可配项不会再"进了接口却看不见"。
+    specs = {}
+    for path, spec in EDITABLE.items():
+        s = {"kind": spec[0]}
+        if spec[0] == "enum":
+            s["choices"] = list(spec[1])
+        elif spec[0] in ("num", "int"):
+            s["min"], s["max"] = spec[1], spec[2]
+        specs[path] = s
+    return {"fields": out, "specs": specs}
 
 
 @app.post("/api/config")
@@ -417,8 +431,8 @@ async def set_config(updates: dict):
     for path, val in updates.items():
         if path not in EDITABLE:
             return {"ok": False, "error": f"不可配置项: {path}"}
-        if path == "notify.discord_webhook" and "…" in str(val):
-            continue  # 掩码值, 未修改
+        if path in ("notify.discord_webhook", "flex.token") and "…(已设置)" in str(val):
+            continue  # 掩码值原样回传 = 未修改, 绝不能把省略号写进配置
         try:
             val = _coerce(EDITABLE[path], val)
         except Exception as e:
