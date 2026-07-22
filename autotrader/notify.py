@@ -25,6 +25,8 @@ class Notifier:
         if not self.url:
             return
         try:
-            requests.post(self.url, json={"content": text[:1900]}, timeout=10)
+            # 同步调用跑在事件循环上, 会阻塞后续交易动作: 连接/读取分开设短超时,
+            # 标量 timeout=10 实际最坏 ~20s+DNS, 曾挤占买入链的安全边际。
+            requests.post(self.url, json={"content": text[:1900]}, timeout=(3, 5))
         except Exception as e:
             log.error("discord 发送失败: %s", e)

@@ -63,7 +63,7 @@ class Engine:
             cand_details = {}
             src = "IB扫描器"
         sc = self.cfg["screener"]
-        depth = sc["skip_rank"] + sc["n_stocks"] + 15  # 递补池深度: 主窗口 + 15 个候补
+        depth = sc["skip_rank"] + sc["n_stocks"] + self._pool_extra()
         try:  # 只买普通股: 排除 ETF/ETN/基金 (Finviz 偶发混入 + 2026-07-15 脏码撞出合法 ETF 的教训)
             candidates = await self._exclude_non_common(candidates, limit=depth)
         except Exception as e:
@@ -322,7 +322,18 @@ class Engine:
             "codex", "exec", "--skip-git-repo-check", "-s", "read-only",
             "-c", "tools.web_search=true", prompt,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, cwd="/tmp")
-        out, _ = await asyncio.wait_for(p.communicate(), timeout=timeout)
+        try:
+            out, _ = await asyncio.wait_for(p.communicate(), timeout=timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # 必须收尸: 超时/整体取消后子进程仍在做网络搜索, 会一路烧 CPU 到 MOC 提交窗口
+            # (守护进程与面板同机)。孤儿数量随并发×票数放大。
+            if p.returncode is None:
+                try:
+                    p.kill()
+                    await p.wait()
+                except ProcessLookupError:
+                    pass
+            raise
         m = _re.findall(r'\{[^{}]*"class"[^{}]*\}', out.decode("utf-8", "replace"))
         return _json.loads(m[-1]) if m else None
 
@@ -342,10 +353,12 @@ class Engine:
         '{{"class":1|2|3,"type":"...","verdict":"skip|caution|ok","risk":0,"reason":"one sentence"}}')
 
     @staticmethod
-    def pre_attrib_budget_of(want_s, secs_to_moc, margin_s=45.0, floor_s=30.0):
+    def pre_attrib_budget_of(want_s, secs_to_moc, margin_s=90.0, floor_s=120.0):
         """裁决可用时长 = min(配置值, 距 MOC 提交的余量 - 安全边际); 不足 floor 返回 0 (跳过)。
         MOC 有交易所截止时间, 观察层晚一秒都不许挤占提交窗口 —— 面板上把超时配多大
-        都不可能推迟买入 (硬不变量由代码保证, 不靠用户填对数字)。"""
+        都不可能推迟买入 (硬不变量由代码保证, 不靠用户填对数字)。
+        边际 90s 而非 45s: 预算之外还要跑 2~3 次 notify.send (同步 requests, 最坏各十几秒)
+        与下一步的 broker.connect 重试; floor 120s: 比这更少的时间判不完任何一票, 白吃边际。"""
         avail = secs_to_moc - margin_s
         if avail < floor_s:
             return 0.0
@@ -355,9 +368,11 @@ class Engine:
         try:
             sched = dict(cal.todays_schedule(self.cfg, d))
             secs = (sched["submit_moc"] - now_et()).total_seconds()
-        except Exception as e:  # 取不到时刻表: 退回配置值 (原行为)
-            log.warning("裁决时间预算计算失败, 用配置值 %ss: %s", want_s, e)
-            return float(want_s)
+        except Exception as e:
+            # 算不出时刻表 (如 schedule_et 键缺失) 正是最不该拿买入链去赌的时刻:
+            # 退回配置值等于把钳制变成透传, 故直接放弃裁决 (观察层可以缺, MOC 不能晚)。
+            log.warning("裁决时间预算算不出, 本次跳过裁决: %s", e)
+            return 0.0
         return self.pre_attrib_budget_of(want_s, secs)
 
     @staticmethod
@@ -394,7 +409,7 @@ class Engine:
         if budget <= 0:  # 离 MOC 截止太近 (迟到补执行等): 观察层永不挤占买入
             self.notify.send(f"[{d}] 距 MOC 提交不足安全边际, 跳过预买裁决 (买入照常)", "warn")
             return
-        syms = [t for t, _ in cands[:sc["skip_rank"] + sc["n_stocks"] + int(pj.get("extra_n", 8))]]
+        syms = [t for t, _ in cands[:sc["skip_rank"] + sc["n_stocks"] + self._pool_extra()]]
         for t, _s, _p in self.plan:  # 计划内的必须覆盖
             if t not in syms:
                 syms.append(t)
@@ -419,7 +434,7 @@ class Engine:
         self._pre_judg = dict(out)
         self._pre_vetoed = []
         pj = self.cfg.get("pre_judg") or {}
-        if pj.get("apply") and out:
+        if pj.get("apply", False) and out:
             rank = {t: i + 1 for i, (t, _) in enumerate(cands)}
             # 排名<=skip_rank 者本就不买, 不给否决资格 (从候选移除会让 skip_rank 错位)
             elig = {t: j for t, j in out.items() if rank.get(t, 999) > sc["skip_rank"]}
@@ -450,7 +465,11 @@ class Engine:
         vetoed = {t for t, _r in self._pre_vetoed}
         skips = [f"{t}(风险{j.get('risk')})" for t, j in out.items()
                  if str(j.get("verdict")).lower() == "skip" and t in bought and t not in vetoed]
-        self.notify.send(f"[{d}] 预买裁决: {len(out)}/{len(syms)} 完成"
+        # 赋权状态必须写进播报: 否则"今晚没有否决"既可能是没票达线, 也可能是开关根本没开,
+        # 事后从日志无从分辨 (用户的"一切可解释"要求)。
+        armed = (f"赋权开(线≥{float(pj.get('veto_risk_min', 9)):g}, 上限{int(pj.get('veto_max_n', 3))}只,"
+                 f" 实际否决{len(vetoed)}只)" if pj.get("apply", False) else "赋权关(仅记分)")
+        self.notify.send(f"[{d}] 预买裁决: {len(out)}/{len(syms)} 完成 | {armed}"
                          + (f"；skip 未达否决线(仅记分): {', '.join(skips)}" if skips
                             else "；买入名单无其他跳过建议"))
 
@@ -899,6 +918,12 @@ class Engine:
              "midday_reconcile": 2 * 3600, "confirm_fills": 4 * 3600, "daily_report": 12 * 3600,
              "submit_moc": 120, "pre_attrib": 240}
 
+    def _pool_extra(self):
+        """递补池深度 = 裁决覆盖深度 (同一个数, 单一来源)。
+        两者若不等就会出现"能递补进场、却从没被裁决判过"的票 —— 否决规则一旦生效,
+        顶上来的那只反而是唯一没体检过的。地板 15 = 该功能上线前的历史递补池深度。"""
+        return max(15, int((self.cfg.get("pre_judg") or {}).get("extra_n", 15)))
+
     def _reload_cfg(self):
         """热加载配置。**先读后换**: 读失败 (如面板正在写入 config.json) 保持原配置不动 —
         旧写法 clear() 后再 update(load_config()) 一旦读取抛错就把活配置清空了。"""
@@ -937,6 +962,13 @@ class Engine:
                 if name == "gate_check":
                     gate_passed = await self.do_gate_check(d)
                 elif name in ("build_plan", "submit_moc"):
+                    if gate_passed is None and name == "build_plan":
+                        # 闸门尚未评估 (典型场景: 15:40 重启部署, gate_check 已过补执行窗口
+                        # 被跳过)。此时 gate_passed 仍是 None, 而下面的守卫只拦 is False,
+                        # None 会一路穿过去 —— 当晚将在既没查环境、也没看「暂停开仓」开关
+                        # 的情况下买入 (pause_buys 只在 do_gate_check 里检查)。就地补判。
+                        self.notify.send(f"[{d}] 闸门未评估 (进程启动晚于其时点), 买入前就地补判", "warn")
+                        gate_passed = await self.do_gate_check(d)
                     if gate_passed is False:
                         log.info("闸门拦截, 跳过 %s", name)
                         status = "skipped"

@@ -37,7 +37,7 @@
     "apply": true,
     "veto_risk_min": 9,
     "veto_max_n": 3,
-    "extra_n": 8,
+    "extra_n": 15,
     "concurrency": 5,
     "call_timeout_s": 140,
     "overall_timeout_s": 270

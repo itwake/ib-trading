@@ -365,10 +365,10 @@ EDITABLE = {
     "pre_judg.apply": ("bool",),
     "pre_judg.veto_risk_min": ("num", 5, 10),
     "pre_judg.veto_max_n": ("int", 0, 10),
-    "pre_judg.extra_n": ("int", 0, 30),
-    "pre_judg.concurrency": ("int", 1, 10),
-    "pre_judg.call_timeout_s": ("num", 20, 300),
-    "pre_judg.overall_timeout_s": ("num", 30, 300),
+    "pre_judg.extra_n": ("int", 15, 25),
+    "pre_judg.concurrency": ("int", 1, 6),
+    "pre_judg.call_timeout_s": ("num", 45, 200),
+    "pre_judg.overall_timeout_s": ("num", 60, 300),
     "risk.cushion_alert_pct": ("num", 1, 50),
     "notify.heartbeat_minutes": ("int", 0, 1440),
     "notify.discord_webhook": ("str",),
@@ -405,7 +405,8 @@ def get_config():
             node = node.get(k, None) if isinstance(node, dict) else None
         out[path] = node
     if out.get("notify.discord_webhook"):
-        out["notify.discord_webhook"] = out["notify.discord_webhook"][:45] + "…(已设置)"
+        # 面板无鉴权: 只回"已设置", 不回前缀 (前 45 字符会连 webhook id 一起暴露)
+        out["notify.discord_webhook"] = "…(已设置)"
     if out.get("flex.token"):
         out["flex.token"] = out["flex.token"][:6] + "…(已设置)"
     # 类型规格随值一起下发: 前端据此渲染控件 (勾选框/下拉/带范围的数字框),
@@ -433,6 +434,11 @@ async def set_config(updates: dict):
             return {"ok": False, "error": f"不可配置项: {path}"}
         if path in ("notify.discord_webhook", "flex.token") and "…(已设置)" in str(val):
             continue  # 掩码值原样回传 = 未修改, 绝不能把省略号写进配置
+        if val is None or (isinstance(val, str) and val.strip() == ""):
+            # 空 = 该项在 config.json 里还没有值且用户也没填 = 不改动。
+            # 否则老配置每缺一个键, 保存时就会以 float('') 抛错并**整份拒绝**,
+            # 让用户在同一次提交里的其他改动一起丢失。
+            continue
         try:
             val = _coerce(EDITABLE[path], val)
         except Exception as e:
