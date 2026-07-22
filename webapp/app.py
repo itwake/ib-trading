@@ -6,7 +6,7 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -543,8 +543,21 @@ async def action_step(step: str):
             ok = await eng.do_build_plan(d)
             if not ok:
                 return "无可买标的/预算不足"
+            # 与定时链同构: 提交前必须先跑裁决, 否则手动测试测不到否决逻辑
+            # (2026-07-22: 手动跑了一次买入流程, 十笔单在选股后 0.6 秒内就发出去了)。
+            # 截止时刻用交易所 MOC 收单 (收盘前 10 分钟) 而非时刻表里的 submit_moc:
+            # 手动是"点完即发", 已过收单时刻则这批单本就排给下一场收盘, 无需抢时间。
+            try:  # 非交易日 (周末测试) 取不到收盘时刻: 视为无截止
+                cutoff = cal.market_close_et(d) - timedelta(minutes=10)
+                cutoff = cutoff if now_et() < cutoff else None
+            except Exception:
+                cutoff = None
+            await eng.do_pre_attrib(d, deadline=cutoff)
+            vetoed = getattr(eng, "_pre_vetoed", None) or []
             await eng.do_submit_moc(d)
-            return "MOC 已提交"
+            tail = ("；裁决否决 " + ", ".join(f"{t}(风险{r:g})" for t, r in vetoed)
+                    + " 并已递补" if vetoed else "")
+            return f"MOC 已提交 ({len(eng.plan)} 只){tail}"
         return await getattr(eng, "do_" + step)(d)
 
     return await _run_manual(STEPS[step], run)

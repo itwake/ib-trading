@@ -364,10 +364,15 @@ class Engine:
             return 0.0
         return max(0.0, min(float(want_s), avail))
 
-    def _pre_attrib_budget(self, d, want_s):
+    def _pre_attrib_budget(self, d, want_s, deadline="auto"):
+        """deadline: "auto"=今日时刻表里的 MOC 提交时刻 (定时链);
+        datetime=显式截止 (手动链传交易所收单时刻); None=没有待提交的单, 不设截止。"""
+        if deadline is None:
+            return float(want_s)
         try:
-            sched = dict(cal.todays_schedule(self.cfg, d))
-            secs = (sched["submit_moc"] - now_et()).total_seconds()
+            if deadline == "auto":
+                deadline = dict(cal.todays_schedule(self.cfg, d))["submit_moc"]
+            secs = (deadline - now_et()).total_seconds()
         except Exception as e:
             # 算不出时刻表 (如 schedule_et 键缺失) 正是最不该拿买入链去赌的时刻:
             # 退回配置值等于把钳制变成透传, 故直接放弃裁决 (观察层可以缺, MOC 不能晚)。
@@ -393,7 +398,7 @@ class Engine:
         elig.sort(key=lambda x: (x[0] not in plan_syms, -x[1], rank.get(x[0], 999)))
         return elig[:max_n]
 
-    async def do_pre_attrib(self, d):
+    async def do_pre_attrib(self, d, deadline="auto"):
         """预买裁决 (15:39, 提交前): 用买入时点可知的信息, LLM 对候选归因并给出
         skip/caution/ok 裁决 + 0~10 风险分。2026-07-22 起 (首夜 PEGA 风险10→-13.7% 后
         用户决定) 由 pre_judg.apply 赋权: 达到 veto_risk_min 的 skip 由确定性规则剔除
@@ -405,7 +410,7 @@ class Engine:
         chg = {t: c for t, c in cands}
         sc = self.cfg["screener"]
         pj = self.cfg.get("pre_judg") or {}
-        budget = self._pre_attrib_budget(d, float(pj.get("overall_timeout_s", 270)))
+        budget = self._pre_attrib_budget(d, float(pj.get("overall_timeout_s", 270)), deadline)
         if budget <= 0:  # 离 MOC 截止太近 (迟到补执行等): 观察层永不挤占买入
             self.notify.send(f"[{d}] 距 MOC 提交不足安全边际, 跳过预买裁决 (买入照常)", "warn")
             return

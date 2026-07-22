@@ -648,14 +648,23 @@ const STEP_TIPS = {
   open_trail:'撤掉在途限价卖单，改挂追踪卖出（宽度见配置）。按「执行时点」配置自动执行。',
   confirm_fills:'拉取今天的买入成交，逐笔登记为 lot 并计算目标价。正常收盘后 16:10 自动执行。',
   daily_report:'与 IB 实际持仓对账（回填已平仓 lot 的真实盈亏）、记录净值快照、推送日报。随时可点，无副作用。',
-  buy_flow:'完整跑一遍：闸门判定→选股→预算分配→提交 MOC 买单。仅在收盘前 15:50 ET 之前有意义（MOC 截止）。'};
+  buy_flow:'完整跑一遍：闸门判定→选股→预算分配→<b>LLM 预买裁决（含否决与递补）</b>→提交 MOC 买单，与每晚定时链完全同构。⏳ 裁决要逐票查询，按当前参数最长约 4~5 分钟，期间按钮会一直转，请勿重复点击。⚠️ 手动买入不会阻止今晚的定时买入：MOC 单在收盘前不计入持仓市值，15:38 的定时选股看不见它，会再排满一整批（两批同时成交＝双倍杠杆）。测试完请及时撤单，或先按「暂停开仓」。仅在收盘前 15:50 ET（MOC 截止）之前提交才有当日意义。'};
 function mlog(s){ const el=$('#m-log'); el.textContent = new Date().toLocaleTimeString()+'  '+s+'\n'+el.textContent; }
-async function act(url, name){
+async function act(url, name, btn){
   mlog(name+' 执行中…'); toast(name+' 执行中…');
+  // 买入流程含 LLM 裁决，可能跑几分钟：禁用按钮防重复提交，并每 10 秒报一次已等时长
+  const t0 = Date.now(); let tick = null;
+  if (btn){ btn.disabled = true; btn.dataset.label = btn.textContent; }
+  const paint = ()=>{ const s = Math.round((Date.now()-t0)/1000);
+    if (btn) btn.textContent = `${btn.dataset.label} 执行中 ${s}s…`;
+    if (s && s % 30 === 0) mlog(`${name} 仍在执行（已 ${s} 秒，裁决逐票查询中）…`); };
+  tick = setInterval(paint, 1000); paint();
   try { const r = await j(url, {method:'POST'});
-    mlog(name+': '+(r.ok?('✅ '+r.result):('❌ '+r.error)));
+    mlog(name+': '+(r.ok?('✅ '+r.result):('❌ '+r.error))+`（耗时 ${Math.round((Date.now()-t0)/1000)}s）`);
     toast(name+': '+(r.ok?r.result:r.error), r.ok?'ok':'err');
   } catch(e){ mlog(name+': ❌ '+e); toast(name+' 失败', 'err'); }
+  finally { clearInterval(tick);
+    if (btn){ btn.disabled = false; btn.textContent = btn.dataset.label; } }
 }
 async function loadManual(){
   const o = await safeJ('/api/overview');
@@ -666,7 +675,7 @@ async function loadManual(){
     `<button class="btn" data-step="${k}" data-tip="${STEP_TIPS[k]}">${v}</button>`).join('');
   document.querySelectorAll('#m-steps .btn').forEach(b=>b.onclick=async ()=>{
     const k = b.dataset.step;
-    if (await uiConfirm('手动执行「'+STEPS[k]+'」', STEP_TIPS[k])) act('/api/action/step/'+k, STEPS[k]);
+    if (await uiConfirm('手动执行「'+STEPS[k]+'」', STEP_TIPS[k])) act('/api/action/step/'+k, STEPS[k], b);
   });
   const rows = o.open_lots;
   if (!rows.length){ $('#m-lots').innerHTML='<tr><td style="color:var(--muted)">无未平仓位</td></tr>'; }
