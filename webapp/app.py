@@ -110,7 +110,7 @@ def _sched_details(schedule, open_lots, snap):
         "overnight_sells": f"挂 OVERNIGHT 场所限价卖单（防超卖清点后，+{ex['overnight_target_pct']}% 起、市价更高则跟随抬价）：{lots_line}",
         "premarket_sells": f"盘前挂 SMART 限价卖单（outsideRth，同价规则）：{lots_line}",
         "open_trail": f"撤系统限价卖单，改挂 {ex['trail_pct']}% 追踪卖出：{trail_line}",
-        "pre_attrib": "预买影子裁决（LLM）：用买入时点可知的信息对候选归因并给 skip/caution/ok 裁决——只记录不执行，攒 4~8 周记分后再决定是否升级为过滤规则",
+        "pre_attrib": "预买裁决（LLM）：用买入时点可知的信息对候选归因并给 skip/caution/ok 裁决与风险分。2026-07-22 起赋权：skip 且风险≥否决线由确定性规则剔除并递补（每晚上限3只），其余仅记分，被否决者影子收益照记",
         "midday_reconcile": "午间对账：固化上午成交并回填平仓（上海时区网关的成交查询窗口 12:00 ET 翻页，须赶在此前）",
         "daily_report": "与 IB 对账（回填真实卖出价与盈亏并播报）→ 净值快照 → Discord 日报 → 分钟线存档 → 候选追踪回填",
     }
@@ -362,6 +362,9 @@ EDITABLE = {
     "schedule_et.premarket_sells_offset_min": ("num", -30, 300),
     "schedule_et.open_trail_offset_min": ("num", -60, 180),
     "schedule_et.midday_reconcile_offset_min": ("num", 30, 148),
+    "pre_judg.apply": ("bool",),
+    "pre_judg.veto_risk_min": ("num", 5, 10),
+    "pre_judg.veto_max_n": ("int", 0, 10),
     "risk.cushion_alert_pct": ("num", 1, 50),
     "notify.heartbeat_minutes": ("int", 0, 1440),
     "notify.discord_webhook": ("str",),
@@ -834,9 +837,10 @@ def watchlist(days: int = 60):
              int(r["news_class"])) if r.get("news_class") is not None else None),
         ("二元事件前瞻", "假设: 持仓窗口内有已排期二元事件 (财报/FDA/判决/交割/解禁) 的候选, 隔夜风险不对称 (全年审计财报单净亏 -$833 的推广)。归因时由 codex 顺路检查未来 2 个交易日。",
          lambda r: None if r.get("binevent") is None else ("有已排期事件" if r["binevent"] else "无排期事件")),
-        ("LLM预买裁决", "影子判断记分板 (维度15): 15:39 用买入时点可知的信息, LLM 对候选给出 skip/caution/ok 裁决与 0~10 风险分——只记录、不执行。假设: skip 桶次日表现显著更差。连续 4~8 周成立才升级为过滤规则 (届时递补机制自动补位); prompt 版本 pv 变更后分数重新起算。",
-         lambda r: {"skip": "⛔ skip", "caution": "⚠️ caution", "ok": "✓ ok"}.get(
-             str(r.get("pre_verdict") or "").lower()) if r.get("pre_verdict") else None),
+        ("LLM预买裁决", "判断记分板 (维度15): 15:39 用买入时点可知的信息, LLM 对候选给出 skip/caution/ok 裁决与 0~10 风险分。2026-07-22 起赋权 (首夜 PEGA 风险10→次晨-13.7% 后用户决定): skip 且风险≥否决线(默认9) 由确定性规则剔除并按原名次递补, 每晚上限3只; 其余裁决继续只记分。被否决者影子收益照记——对照『被否决者影子 vs 递补者实盘』即否决规则的真实贡献。假设: skip 桶次日表现显著更差; prompt 版本 pv 变更后分数重新起算。",
+         lambda r: ("🚫 已否决" if r.get("pre_vetoed") else
+                    {"skip": "⛔ skip", "caution": "⚠️ caution", "ok": "✓ ok"}.get(
+                        str(r.get("pre_verdict") or "").lower())) if r.get("pre_verdict") else None),
     ]
     by_tag = []
     for title, hyp, fn in TAGS:

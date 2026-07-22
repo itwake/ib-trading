@@ -70,6 +70,8 @@ class Engine:
             log.warning("标的类型过滤失败(不阻断): %s", e)
         prices = await self.broker.last_prices([t for t, _ in candidates[:depth]])
         self.plan = build_plan(self.cfg, candidates, prices, budget)
+        # 供 15:39 裁决否决后重选 (同一份定价, 不再发行情请求)
+        self._cand_prices, self._plan_budget = dict(prices), budget
         # 失效防护: 候选窗口是满的、却几乎全部无法在 IB 定价 => 选股数据疑似损坏
         # (2026-07-15 事故: Finviz 改版致代码解析出错, 唯一"撞上真名"的 EELV 被误买)。
         # 宁可空仓一晚, 不买垃圾数据选出的票。
@@ -339,16 +341,36 @@ class Engine:
         '(c) risk score 0-10 (10=worst). Reply ONLY JSON: '
         '{{"class":1|2|3,"type":"...","verdict":"skip|caution|ok","risk":0,"reason":"one sentence"}}')
 
+    @staticmethod
+    def pick_pre_vetoes(verdicts, plan_syms, rank, risk_min, max_n):
+        """确定性否决遴选 (LLM 只出判断, 动作由本规则执行):
+        verdict==skip 且 risk>=risk_min 者入围; 计划内优先、再按风险分降序、
+        再按原名次升序; 每晚最多 max_n 只 —— 限定 LLM 对当晚计划的影响上界。
+        非计划内的高危候选也可入围: 拦住它经递补进场的路。返回 [(sym, risk)]。"""
+        plan_syms = set(plan_syms)
+        elig = []
+        for t, j in verdicts.items():
+            try:
+                risk = float(j.get("risk"))
+            except (TypeError, ValueError):
+                continue
+            if str(j.get("verdict", "")).lower() == "skip" and risk >= risk_min:
+                elig.append((t, risk))
+        elig.sort(key=lambda x: (x[0] not in plan_syms, -x[1], rank.get(x[0], 999)))
+        return elig[:max_n]
+
     async def do_pre_attrib(self, d):
-        """预买影子裁决 (15:39, 提交前): 用买入时点可知的信息, LLM 对候选归因并给出
-        skip/caution/ok 裁决 + 0~10 风险分。只记录不执行 (判断先记分、后掌权);
-        整体硬超时 270s, 失败/超时一律放行, 不影响 15:45 提交。"""
+        """预买裁决 (15:39, 提交前): 用买入时点可知的信息, LLM 对候选归因并给出
+        skip/caution/ok 裁决 + 0~10 风险分。2026-07-22 起 (首夜 PEGA 风险10→-13.7% 后
+        用户决定) 由 pre_judg.apply 赋权: 达到 veto_risk_min 的 skip 由确定性规则剔除
+        并按原名次递补, 其余裁决继续只记分; 被否决者照记影子收益 (边用边观察)。
+        失败/超时一律放行 (整体硬超时 270s), 不影响 15:45 提交。"""
         if not self.plan:
             return
         cands = list(getattr(self, "_watch_candidates", None) or [])
         chg = {t: c for t, c in cands}
         sc = self.cfg["screener"]
-        syms = [t for t, _ in cands[:sc["skip_rank"] + sc["n_stocks"] + 5]]
+        syms = [t for t, _ in cands[:sc["skip_rank"] + sc["n_stocks"] + 8]]
         for t, _s, _p in self.plan:  # 计划内的必须覆盖
             if t not in syms:
                 syms.append(t)
@@ -370,25 +392,58 @@ class Engine:
         except asyncio.TimeoutError:
             log.warning("预买裁决整体超时, 完成 %d/%d", len(out), len(syms))
         self._pre_judg = dict(out)
+        self._pre_vetoed = []
+        pj = self.cfg.get("pre_judg") or {}
+        if pj.get("apply") and out:
+            rank = {t: i + 1 for i, (t, _) in enumerate(cands)}
+            # 排名<=skip_rank 者本就不买, 不给否决资格 (从候选移除会让 skip_rank 错位)
+            elig = {t: j for t, j in out.items() if rank.get(t, 999) > sc["skip_rank"]}
+            vetoes = self.pick_pre_vetoes(elig, [t for t, _s, _p in self.plan], rank,
+                                          float(pj.get("veto_risk_min", 9)),
+                                          int(pj.get("veto_max_n", 3)))
+            in_plan = [v for v in vetoes if v[0] in {t for t, _s, _p in self.plan}]
+            prices = getattr(self, "_cand_prices", None)
+            if vetoes and prices is not None:
+                old = {t for t, _s, _p in self.plan}
+                dead = {t for t, _r in vetoes}
+                new_plan = build_plan(self.cfg, [c for c in cands if c[0] not in dead],
+                                      prices, getattr(self, "_plan_budget", 0.0))
+                if not new_plan and self.plan:  # 重选异常空 => 放弃否决, 保原计划
+                    self.notify.send(f"🚨 [{d}] 否决后重选得到空计划, 保留原计划不变", "critical")
+                else:
+                    self.plan = new_plan
+                    self._pre_vetoed = list(vetoes)
+                    subs = [f"{t} x{s} @~{p:.2f}" for t, s, p in new_plan if t not in old]
+                    self.notify.send(
+                        f"[{d}] ⛔ 裁决否决生效 (skip且风险≥{pj.get('veto_risk_min', 9):g}): "
+                        + ", ".join(f"{t}(风险{r:g})" for t, r in in_plan)
+                        + (f"；场外拦截: " + ", ".join(f"{t}(风险{r:g})" for t, r in vetoes
+                                                       if (t, r) not in in_plan) if len(vetoes) > len(in_plan) else "")
+                        + (f"\n递补: " + ", ".join(subs) if subs
+                           else "\n无可递补, 计划减为 %d 只" % len(new_plan)), "warn")
         bought = {t for t, _s, _p in self.plan}
+        vetoed = {t for t, _r in self._pre_vetoed}
         skips = [f"{t}(风险{j.get('risk')})" for t, j in out.items()
-                 if str(j.get("verdict")).lower() == "skip" and t in bought]
-        self.notify.send(f"[{d}] 预买影子裁决: {len(out)}/{len(syms)} 完成"
-                         + (f"；LLM 建议跳过(仅记录未执行): {', '.join(skips)}" if skips
-                            else "；买入名单无跳过建议"))
+                 if str(j.get("verdict")).lower() == "skip" and t in bought and t not in vetoed]
+        self.notify.send(f"[{d}] 预买裁决: {len(out)}/{len(syms)} 完成"
+                         + (f"；skip 未达否决线(仅记分): {', '.join(skips)}" if skips
+                            else "；买入名单无其他跳过建议"))
 
     def _tag_pre_judg(self, d):
-        """把 15:39 的影子裁决落进 watchlist (行在 16:20 add_watch 后才存在)。"""
+        """把 15:39 的裁决落进 watchlist (行在 16:20 add_watch 后才存在)。"""
         pj = getattr(self, "_pre_judg", None) or {}
+        vetoed = {t for t, _r in (getattr(self, "_pre_vetoed", None) or [])}
         for t, j in pj.items():
             self.db.set_watch_features(
                 str(d), t, pre_class=int(j.get("class") or 0) or None,
                 pre_verdict=str(j.get("verdict", "")).lower()[:8],
                 pre_risk=float(j.get("risk")) if j.get("risk") is not None else None,
-                pre_reason=str(j.get("reason", ""))[:200], pre_pv=self.PRE_JUDG_PV)
+                pre_reason=str(j.get("reason", ""))[:200], pre_pv=self.PRE_JUDG_PV,
+                pre_vetoed=1 if t in vetoed else None)
         if pj:
-            log.info("[%s] 预买裁决落库 %d 只", d, len(pj))
+            log.info("[%s] 预买裁决落库 %d 只 (其中否决 %d)", d, len(pj), len(vetoed))
         self._pre_judg = None
+        self._pre_vetoed = None
 
     async def _tag_news_pulse(self, d, head):
         """异动归因 (news-pulse, 维度13): 用服务器上已授权的 codex CLI + 网络搜索,

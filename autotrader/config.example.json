@@ -32,6 +32,7 @@
     "open_trail_offset_min": -10,
     "midday_reconcile_offset_min": 145
   },
+  "pre_judg": { "apply": true, "veto_risk_min": 9, "veto_max_n": 3 },
   "risk": { "cushion_alert_pct": 12 },
   "flex": { "token": "", "query_id": "" },
   "notify": { "discord_webhook": "", "heartbeat_minutes": 60 },
