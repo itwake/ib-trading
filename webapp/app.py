@@ -855,6 +855,70 @@ def mood():
                              "越高越接近历史级恐慌 — 按全年审计, 高分环境才是本策略的收益密度区。"}
 
 
+@app.get("/api/mood/history")
+def mood_history():
+    """氛围历史走势 (点卡片弹层用): 每个面板自带序列/阈值线/说明, 前端只负责画。"""
+    rows = q("SELECT * FROM mood_daily ORDER BY date")
+    if not rows:
+        return {"dates": [], "panels": {}}
+    dates = [r["date"] for r in rows]
+    col = lambda k: [r.get(k) for r in rows]
+    vix, vix3m, vvix, pc = col("vix"), col("vix3m"), col("vvix"), col("pc_ratio")
+    term = [(v / v3) if v and v3 else None for v, v3 in zip(vix, vix3m)]
+
+    def roll20(xs):
+        out = []
+        for i in range(len(xs)):
+            w = [x for x in xs[max(0, i - 19):i + 1] if x is not None]
+            out.append(round(sum(w), 2) if len(w) >= 10 else None)
+        return out
+
+    def pct_series(xs):
+        out = []
+        for i in range(len(xs)):
+            if xs[i] is None:
+                out.append(None)
+                continue
+            w = [x for x in xs[max(0, i - 251):i + 1] if x is not None]
+            out.append(round(100.0 * sum(1 for x in w if x <= xs[i]) / len(w), 0)
+                       if len(w) >= 20 else None)
+        return out
+
+    comp = []
+    parts = [pct_series(vix), pct_series(term), pct_series(vvix), pct_series(pc)]
+    for i in range(len(rows)):
+        vals = [p[i] for p in parts if p[i] is not None]
+        comp.append(round(sum(vals) / len(vals), 0) if vals else None)
+    wl = {r["date"]: r for r in q(
+        "SELECT date, ROUND(AVG(fomo_score),1) f,"
+        " ROUND(100.0*SUM(CASE WHEN pre_verdict='skip' THEN 1 ELSE 0 END)/NULLIF(COUNT(pre_verdict),0)) sk,"
+        " ROUND(100.0*SUM(CASE WHEN news_class=1 THEN 1 ELSE 0 END)/NULLIF(COUNT(news_class),0)) h1"
+        " FROM watchlist GROUP BY date")}
+    wcol = lambda k: [(wl.get(d) or {}).get(k) for d in dates]
+    mc = cfg.get("mood") or {}
+    P = {
+        "composite": ("恐慌温度 (合成)", [("恐慌温度", comp)], [(70, "收益密度区分界")]),
+        "vix": ("VIX", [("VIX", vix)], [(float(mc.get("vix_flip", 19)), "黄金区分界 (审计)")]),
+        "term": ("VIX/VIX3M 期限结构", [("VIX/VIX3M", [round(t, 3) if t else None for t in term])],
+                 [(float(mc.get("term_flip", 1.0)), "倒挂分界")]),
+        "vvix": ("VVIX", [("VVIX", vvix)], [(float(mc.get("vvix_flip", 110)), "转折预警线")]),
+        "pc": ("Put/Call", [("P/C", pc)], [(1.2, "看跌拥挤"), (0.8, "自满")]),
+        "credit": ("信用比价 HYG/IEF", [("HYG/IEF", col("hyg_ief"))], []),
+        "breadth": ("广度比价 RSP/SPY", [("RSP/SPY", col("rsp_spy"))], []),
+        "onid": ("SPY 隔夜/日内 (20日滚动累计%)",
+                 [("隔夜", roll20(col("spy_on_pct"))), ("日内", roll20(col("spy_id_pct")))], [(0, "零线")]),
+        "fg": ("CNN Fear&Greed", [("F&G", col("fear_greed"))], [(25, "极恐"), (75, "极贪")]),
+        "naaim": ("NAAIM 经理人仓位", [("NAAIM", col("naaim"))], [(30, "悲观"), (90, "拥挤")]),
+        "nfomo": ("夜均 FOMO 分", [("夜均FOMO", wcol("f"))], [(25, "过热")]),
+        "skip": ("裁决 skip 率 %", [("skip率", wcol("sk"))], [(50, "雷区密度高")]),
+        "hard": ("①硬事件占比 %", [("硬事件%", wcol("h1"))], [(50, "硬事件主导")]),
+    }
+    return {"dates": dates,
+            "panels": {k: {"label": lb, "series": [{"name": n, "data": d} for n, d in ss],
+                           "thresholds": [{"v": v, "label": tl} for v, tl in ths]}
+                       for k, (lb, ss, ths) in P.items()}}
+
+
 @app.get("/api/gate/shadow_sim")
 def gate_shadow_sim():
     """如果闸门开着会怎样: 用每晚影子判定 × 该批次真实盈亏做的实盘对比 (非回测)。"""

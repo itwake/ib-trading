@@ -248,6 +248,16 @@
 </main>
 <div id="tooltip"></div>
 <div id="modal-mask"><div id="modal"></div></div>
+<div id="mchart-mask" style="position:fixed; inset:0; z-index:900; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center;">
+  <div style="background:var(--card); border:1px solid var(--border); border-radius:12px; width:min(820px,94vw); padding:18px 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+      <h4 id="mchart-title" style="margin:0 0 4px; font-size:16px;"></h4>
+      <button class="btn" id="mchart-close">关闭</button>
+    </div>
+    <div id="mchart-sub" style="color:var(--muted); font-size:12.5px; margin-bottom:10px;"></div>
+    <div class="chartbox" style="height:min(340px,52vh);"><canvas id="mchart-canvas"></canvas></div>
+  </div>
+</div>
 <div id="toasts"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
@@ -387,17 +397,51 @@ const MOOD_C = {ok:'var(--green)', warn:'var(--amber)', err:'var(--red)', muted:
 async function loadMood(){
   const m = await safeJ('/api/mood');
   if (!m || !m.rows || !m.rows.length) return;   // 无数据保持占位提示
-  $('#mood-asof').textContent = `(${m.as_of}, 已积累 ${m.n_days} 天)`;
-  const cards = m.rows.map(r=>
-    `<div class="card" data-tip="${r.tip}"><div class="k">${r.label}</div>`+
-    `<div class="v" style="color:${MOOD_C[r.state]||'var(--text)'}">${r.value}</div>`+
-    `<div class="s" style="color:${MOOD_C[r.state]||'var(--muted)'}">${r.note}</div></div>`);
+  $('#mood-asof').textContent = `(${m.as_of}, 已积累 ${m.n_days} 天 · 点卡片看走势)`;
+  const card = (key, tip, k, v, s) =>
+    `<div class="card" data-key="${key}" data-tip="${tip}（点击查看历史走势）" style="cursor:pointer;">`+
+    `<div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  const cards = m.rows.map(r=> card(r.key, r.tip, r.label,
+    `<span style="color:${MOOD_C[r.state]||'var(--text)'}">${r.value}</span>`,
+    `<span style="color:${MOOD_C[r.state]||'var(--muted)'}">${r.note}</span>`));
   if (m.composite != null)
-    cards.unshift(`<div class="card" data-tip="${m.composite_tip}"><div class="k">恐慌温度（合成）</div>`+
-      `<div class="v" style="color:${m.composite>=70?'var(--green)':(m.composite>=40?'var(--amber)':'var(--muted)')}">${m.composite}</div>`+
-      `<div class="s">近一年百分位均值 · 高=收益密度区</div></div>`);
+    cards.unshift(card('composite', m.composite_tip, '恐慌温度（合成）',
+      `<span style="color:${m.composite>=70?'var(--green)':(m.composite>=40?'var(--amber)':'var(--muted)')}">${m.composite}</span>`,
+      '近一年百分位均值 · 高=收益密度区'));
   $('#mood-cards').innerHTML = cards.join('');
+  document.querySelectorAll('#mood-cards [data-key]').forEach(el=>
+    el.onclick = ()=>showMoodChart(el.dataset.key));
 }
+let moodHist = null;
+const MLINE = ['#4a90d9', '#e0a52e'];
+async function showMoodChart(key){
+  if (!moodHist) moodHist = await safeJ('/api/mood/history');
+  const p = moodHist && moodHist.panels && moodHist.panels[key];
+  if (!p){ toast('该指标暂无历史数据', 'err'); return; }
+  const ds = p.series.map((s,i)=>({label:s.name, data:s.data, borderColor:MLINE[i%2],
+    borderWidth:1.6, pointRadius:0, tension:.15, spanGaps:true}));
+  p.thresholds.forEach(t=> ds.push({label:`${t.label} (${t.v})`, data:moodHist.dates.map(()=>t.v),
+    borderColor:'rgba(224,82,82,.75)', borderWidth:1, borderDash:[6,4], pointRadius:0}));
+  // 注脚: 当前值在全部非空历史中的百分位 —— 回答"现在处于什么位置"
+  const main = p.series[0].data, curIdx = (()=>{ for(let i=main.length-1;i>=0;i--) if(main[i]!=null) return i; return -1; })();
+  let sub = '';
+  if (curIdx >= 0){
+    const vals = main.filter(x=>x!=null), cur = main[curIdx];
+    const pct = Math.round(100*vals.filter(x=>x<=cur).length/vals.length);
+    sub = `当前 ${cur} ＝ 近 ${vals.length} 个交易日的第 ${pct} 百分位` +
+          (pct>=80?'（历史高位）':pct<=20?'（历史低位）':'（中间区域）');
+  }
+  $('#mchart-title').textContent = p.label;
+  $('#mchart-sub').textContent = sub;
+  $('#mchart-mask').style.display = 'flex';
+  chart('mchart-canvas', {type:'line', data:{labels:moodHist.dates, datasets:ds},
+    options:{responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false},
+      plugins:{legend:{labels:{color:'#8b95a3', boxWidth:18}}},
+      scales:{x:{ticks:{color:'#8b95a3', maxTicksLimit:10}, grid:{display:false}},
+              y:{ticks:{color:'#8b95a3'}, grid:{color:'#2a323d'}}}}});
+}
+$('#mchart-close') && ($('#mchart-close').onclick = ()=>$('#mchart-mask').style.display='none');
+$('#mchart-mask') && ($('#mchart-mask').onclick = e=>{ if(e.target===$('#mchart-mask')) $('#mchart-mask').style.display='none'; });
 async function loadOverview(){
   loadMood();
   const o = await header_();
