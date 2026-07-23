@@ -14,6 +14,8 @@ import yfinance as yf  # noqa: E402
 
 HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",  # 缺这项会被 CNN 拒 (418), 与引擎 _MOOD_HDRS 保持一致
         "Referer": "https://edition.cnn.com/markets/fear-and-greed"}
 
 
