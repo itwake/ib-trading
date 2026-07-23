@@ -369,6 +369,9 @@ EDITABLE = {
     "pre_judg.concurrency": ("int", 1, 6),
     "pre_judg.call_timeout_s": ("num", 45, 200),
     "pre_judg.overall_timeout_s": ("num", 60, 300),
+    "mood.vix_flip": ("num", 10, 40),
+    "mood.term_flip": ("num", 0.8, 1.2),
+    "mood.vvix_flip": ("num", 80, 150),
     "risk.cushion_alert_pct": ("num", 1, 50),
     "notify.heartbeat_minutes": ("int", 0, 1440),
     "notify.discord_webhook": ("str",),
@@ -747,6 +750,109 @@ def gate_history(days: int = 180):
                 "passed": [bool((vix.get(d) or 0) >= g["vix_min"] or (spy_pct.get(d) or 0) <= g["spy_max_pct"]) for d in dates],
                 "vix_min": g["vix_min"], "spy_max_pct": g["spy_max_pct"]}
     return cached("gate_hist", 3600, build)
+
+
+def _pct_rank(series, v):
+    """v 在 series 中的百分位 (0-100), 样本不足返回 None。"""
+    vals = [x for x in series if x is not None]
+    if v is None or len(vals) < 20:
+        return None
+    return round(100.0 * sum(1 for x in vals if x <= v) / len(vals), 0)
+
+
+@app.get("/api/mood")
+def mood():
+    """市场氛围: mood_daily 日度序列 + 自产指标 (候选池采样), 服务端判级, 仅观察。"""
+    rows = q("SELECT * FROM mood_daily ORDER BY date")
+    out, comp_parts = [], []
+    if not rows:
+        return {"rows": [], "as_of": None}
+    hist = rows[-252:]
+    cur = rows[-1]
+
+    def add(key, label, value, state, note, tip):
+        out.append({"key": key, "label": label, "value": value, "state": state,
+                    "note": note, "tip": tip})
+
+    v = cur.get("vix")
+    if v is not None:
+        st = ("ok", "黄金区") if v >= 19 else (("warn", "过渡带") if v >= 17 else ("muted", "弱区"))
+        add("vix", "VIX", f"{v:.1f}", st[0], st[1],
+            "全年审计: VIX≥19 纪律单每万 +$140~194, <19 为负; 阈值 17→22 收益单调上升。绿=对本策略有利。")
+        comp_parts.append(_pct_rank([r["vix"] for r in hist], v))
+    term = (cur.get("vix") / cur.get("vix3m")) if cur.get("vix") and cur.get("vix3m") else None
+    if term is not None:
+        st = ("ok", "倒挂·恐慌") if term >= 1.0 else (("warn", "趋紧") if term >= 0.93 else ("muted", "升水·平静"))
+        add("term", "VIX/VIX3M 期限结构", f"{term:.3f}", st[0], st[1],
+            "Nagel 2012: 反转收益被近端恐慌强预测。>1 (倒挂) = 反转策略最好的环境。")
+        comp_parts.append(_pct_rank([(r["vix"] / r["vix3m"]) if r.get("vix") and r.get("vix3m")
+                                     else None for r in hist], term))
+    vv = cur.get("vvix")
+    if vv is not None:
+        st = ("warn", "转折预警") if vv >= 110 else ("muted", "平稳")
+        add("vvix", "VVIX (波动率的波动率)", f"{vv:.0f}", st[0], st[1],
+            "期权市场给'VIX 自身要动'定价: >110 常领先 VIX 上穿, 是黄金区开启的前哨。")
+        comp_parts.append(_pct_rank([r["vvix"] for r in hist], vv))
+    pc = cur.get("pc_ratio")
+    if pc is not None:
+        st = ("ok", "看跌拥挤·反指") if pc >= 1.2 else (("err", "自满") if pc <= 0.8 else ("muted", "中性"))
+        add("pc", f"Put/Call ({cur.get('pc_src') or '?'})", f"{pc:.2f}", st[0], st[1],
+            "经典逆向指标: 看跌拥挤 (高) 往往接近局部底部; 过低 = 自满。cboe=官方总比值, spy_opt=期权链自算兜底。")
+        comp_parts.append(_pct_rank([r["pc_ratio"] for r in hist], pc))
+    if len(rows) >= 6 and cur.get("hyg_ief") and rows[-6].get("hyg_ief"):
+        chg = (cur["hyg_ief"] / rows[-6]["hyg_ief"] - 1) * 100
+        st = ("err", "信用趋弱·跳空风险↑") if chg <= -0.5 else (("warn", "走弱") if chg < 0 else ("muted", "平稳"))
+        add("credit", "信用比价 HYG/IEF (5日)", f"{chg:+.2f}%", st[0], st[1],
+            "信用债相对国债走弱常领先股票持续下跌 — 对隔夜持仓者是跳空风险温度计 (MGY/PEGA 式风险)。")
+    if len(rows) >= 6 and cur.get("rsp_spy") and rows[-6].get("rsp_spy"):
+        chg = (cur["rsp_spy"] / rows[-6]["rsp_spy"] - 1) * 100
+        st = ("err", "中盘承压·伪平静") if chg <= -0.5 else (("warn", "偏弱") if chg < 0 else ("muted", "健康"))
+        add("breadth", "广度比价 RSP/SPY (5日)", f"{chg:+.2f}%", st[0], st[1],
+            "等权跌、市值指数稳 = 少数大票撑指数而中盘普跌 — 恰是本策略候选池 (cap_midover) 承压的伪装环境。")
+    on20 = [r["spy_on_pct"] for r in rows[-20:] if r.get("spy_on_pct") is not None]
+    id20 = [r["spy_id_pct"] for r in rows[-20:] if r.get("spy_id_pct") is not None]
+    if len(on20) >= 10:
+        s_on, s_id = sum(on20), sum(id20)
+        st = ("ok", "隔夜溢价在") if s_on > 0 else ("err", "隔夜溢价消失")
+        add("onid", f"SPY 隔夜/日内 ({len(on20)}日累计)", f"{s_on:+.1f}% / {s_id:+.1f}%", st[0], st[1],
+            "Lou-Polk-Skouras: 反转利润在隔夜。隔夜累计为正 = 本策略的结构性顺风还在。")
+    fg = cur.get("fear_greed")
+    if fg is not None:
+        st = (("ok", "极度恐慌·反转沃土") if fg <= 25 else ("warn", "恐慌") if fg <= 45
+              else ("err", "极度贪婪") if fg >= 75 else ("muted", "中性"))
+        add("fg", "CNN Fear&Greed", f"{fg:.0f}", st[0], st[1],
+            "CNN 七因子合成 (0=极恐 100=极贪)。非官方接口, 断了会自动降级留空。低分对反转策略有利。")
+    na = cur.get("naaim")
+    if na is not None:
+        st = (("ok", "经理人低仓·悲观") if na <= 30 else ("err", "满仓拥挤") if na >= 90 else ("muted", "中性"))
+        add("naaim", "NAAIM 经理人仓位", f"{na:.0f}", st[0], st[1],
+            "主动经理人平均股票敞口 (周频)。极低 = 专业盘悲观 (逆向偏多); 极高 = 拥挤。")
+    # ---- 自产: 候选池即市场情绪采样器 ----
+    w = q("SELECT AVG(fomo_score) f, COUNT(fomo_score) nf,"
+          " SUM(CASE WHEN pre_verdict='skip' THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(pre_verdict),0) sk,"
+          " SUM(CASE WHEN news_class=1 THEN 1 ELSE 0 END)*1.0/NULLIF(COUNT(news_class),0) h1"
+          " FROM watchlist WHERE date=(SELECT MAX(date) FROM watchlist)")
+    if w and w[0]["nf"]:
+        f = w[0]["f"]
+        st = ("err", "过热夜") if f >= 25 else (("warn", "升温") if f >= 15 else ("muted", "常规"))
+        add("nfomo", "夜均 FOMO 分", f"{f:.1f}", st[0], st[1],
+            "候选池平均 FOMO 分 (0-100)。普跌期夜均 13-22; 07-16 顶部夜 22.1 — 夜均升高 = 跌的是前期热门票, 情绪转折信号。")
+    if w and w[0]["sk"] is not None:
+        sk = w[0]["sk"] * 100
+        st = ("err", "雷区密度高") if sk >= 50 else (("warn", "偏高") if sk >= 30 else ("muted", "正常"))
+        add("skip", "裁决 skip 率 (昨夜)", f"{sk:.0f}%", st[0], st[1],
+            "LLM 裁决为 skip 的候选占比。财报季常 >60% — Chan 2003: 硬事件驱动的大跌续跌概率高, skip 率高的夜整体胜率低。")
+    if w and w[0]["h1"] is not None:
+        h1 = w[0]["h1"] * 100
+        st = ("err", "硬事件主导") if h1 >= 50 else (("warn", "偏高") if h1 >= 30 else ("muted", "板块/无消息为主"))
+        add("hard", "①硬事件占比 (昨夜)", f"{h1:.0f}%", st[0], st[1],
+            "归因为个股硬事件的候选占比。高 = 跌幅榜由财报/评级等信息驱动 (最不利的夜型); 低 = 流动性/板块驱动 (反弹更可靠)。")
+    comps = [c for c in comp_parts if c is not None]
+    composite = round(sum(comps) / len(comps), 0) if comps else None
+    return {"rows": out, "as_of": cur["date"], "n_days": len(rows),
+            "composite": composite,
+            "composite_tip": "恐慌温度 0-100: VIX/期限结构/VVIX/PutCall 各自在近一年中的百分位取均值。"
+                             "越高越接近历史级恐慌 — 按全年审计, 高分环境才是本策略的收益密度区。"}
 
 
 @app.get("/api/gate/shadow_sim")

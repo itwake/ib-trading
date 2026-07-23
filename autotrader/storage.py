@@ -58,6 +58,15 @@ CREATE TABLE IF NOT EXISTS briefs (
   kind TEXT, date TEXT, text TEXT,          -- LLM 简报存档 (weekend=周末风险简报)
   PRIMARY KEY (kind, date)
 );
+CREATE TABLE IF NOT EXISTS mood_daily (
+  date TEXT PRIMARY KEY,                    -- 市场氛围日度序列 (2026-07-22 起, 全部免费源, 仅观察)
+  vix REAL, vix3m REAL, vvix REAL, skew REAL,
+  hyg_ief REAL, rsp_spy REAL,               -- 信用比价 / 等权广度比价
+  spy_on_pct REAL, spy_id_pct REAL,         -- SPY 当日隔夜/日内收益分解 (%)
+  pc_ratio REAL, pc_src TEXT,               -- Put/Call: cboe=官方总比值, spy_opt=期权链自算
+  fear_greed REAL,                          -- CNN Fear&Greed 0-100 (低=恐慌)
+  naaim REAL                                -- NAAIM 经理人仓位 (周频, 记录当日快照)
+);
 """
 
 
@@ -109,6 +118,27 @@ class DB:
         sql = "UPDATE watchlist SET " + ", ".join(f"{k}=?" for k in cols) + " WHERE date=? AND symbol=?"
         self.conn.execute(sql, (*cols.values(), date, symbol))
         self.conn.commit()
+
+    MOOD_COLS = ("vix", "vix3m", "vvix", "skew", "hyg_ief", "rsp_spy",
+                 "spy_on_pct", "spy_id_pct", "pc_ratio", "pc_src", "fear_greed", "naaim")
+
+    def set_mood(self, date, **cols):
+        """UPSERT 当日氛围行 (None 跳过, 不覆盖已有值)。"""
+        cols = {k: v for k, v in cols.items() if k in self.MOOD_COLS and v is not None}
+        self.conn.execute("INSERT OR IGNORE INTO mood_daily (date) VALUES (?)", (date,))
+        if cols:
+            sql = "UPDATE mood_daily SET " + ", ".join(f"{k}=?" for k in cols) + " WHERE date=?"
+            self.conn.execute(sql, (*cols.values(), date))
+        self.conn.commit()
+
+    def get_mood_prev(self, date):
+        """date 之前最近一行 (翻转告警的比较基准), 无则 None。"""
+        row = self.conn.execute(
+            "SELECT * FROM mood_daily WHERE date < ? ORDER BY date DESC LIMIT 1", (date,)).fetchone()
+        if not row:
+            return None
+        keys = [c[0] for c in self.conn.execute("SELECT * FROM mood_daily LIMIT 0").description]
+        return dict(zip(keys, row))
 
     def set_night_env(self, date, vix3m=None, cand_n=None, cand_avg_drop=None):
         self.conn.execute(

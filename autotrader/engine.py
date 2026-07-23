@@ -539,6 +539,116 @@ class Engine:
         self.db.set_night_env(str(d), vix3m=vix3m, cand_n=len(candidates),
                               cand_avg_drop=round(sum(drops) / len(drops), 2) if drops else None)
 
+    _MOOD_HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+                  "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+                  "Accept-Language": "en-US,en;q=0.9",
+                  "Referer": "https://edition.cnn.com/markets/fear-and-greed"}
+
+    def _mood_get(self, url, timeout=15):
+        import urllib.request
+        req = urllib.request.Request(url, headers=self._MOOD_HDRS)
+        return urllib.request.urlopen(req, timeout=timeout).read()
+
+    def _tag_mood(self, d):
+        """市场氛围日度序列 (mood_daily, 2026-07-22 起): 全部免费源, 每个子源独立降级,
+        仅观察不拦截。写完与前一行比对, 翻转 (VIX 上/下穿, 期限结构倒挂, VVIX 预警) 推 Discord。
+        依据: 用户全年审计 (VIX≥19 黄金区) + Nagel 2012 (期限结构) + 信用/广度领先性。"""
+        import json as _json
+        import re as _re
+        import yfinance as yf
+        row = {}
+        try:  # --- yfinance 批量: 波动率族 + 信用/广度比价 + SPY 隔夜/日内分解 ---
+            df = yf.download(["^VIX", "^VIX3M", "^VVIX", "^SKEW", "HYG", "IEF", "RSP", "SPY"],
+                             period="7d", interval="1d", progress=False, auto_adjust=False)
+            close = df["Close"].dropna(how="all")
+            last = close.iloc[-1]
+            g = lambda s: (round(float(last[s]), 2) if last.get(s) == last.get(s) else None)
+            row.update(vix=g("^VIX"), vix3m=g("^VIX3M"), vvix=g("^VVIX"), skew=g("^SKEW"))
+            if g("HYG") and g("IEF"):
+                row["hyg_ief"] = round(g("HYG") / g("IEF"), 4)
+            if g("RSP") and g("SPY"):
+                row["rsp_spy"] = round(g("RSP") / g("SPY"), 4)
+            spy_o, spy_c = df["Open"]["SPY"].dropna(), close["SPY"].dropna()
+            if len(spy_c) >= 2 and len(spy_o) >= 1:
+                row["spy_on_pct"] = round((float(spy_o.iloc[-1]) / float(spy_c.iloc[-2]) - 1) * 100, 3)
+                row["spy_id_pct"] = round((float(spy_c.iloc[-1]) / float(spy_o.iloc[-1]) - 1) * 100, 3)
+        except Exception as e:
+            log.warning("氛围[yfinance]失败: %s", e)
+        try:  # --- CNN Fear&Greed (非官方接口, 需完整浏览器头; 改版即降级) ---
+            fg = _json.loads(self._mood_get(
+                "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"))["fear_and_greed"]
+            row["fear_greed"] = round(float(fg["score"]), 1)
+        except Exception as e:
+            log.warning("氛围[CNN F&G]失败: %s", e)
+        try:  # --- Put/Call: CBOE 官方总比值优先, 期权链自算兜底 ---
+            h = self._mood_get("https://www.cboe.com/us/options/market_statistics/daily/").decode("utf-8", "replace")
+            m = _re.search(r"TOTAL PUT/CALL RATIO[^0-9]*([0-9.]+)", h, _re.I)
+            if m and 0.2 < float(m.group(1)) < 3:
+                row["pc_ratio"], row["pc_src"] = float(m.group(1)), "cboe"
+        except Exception as e:
+            log.warning("氛围[CBOE P/C]失败: %s", e)
+        if "pc_ratio" not in row:
+            try:
+                tk = yf.Ticker("SPY")
+                pv = cv = 0
+                for exp in tk.options[:3]:
+                    ch = tk.option_chain(exp)
+                    pv += float(ch.puts["volume"].fillna(0).sum())
+                    cv += float(ch.calls["volume"].fillna(0).sum())
+                if cv > 0:
+                    row["pc_ratio"], row["pc_src"] = round(pv / cv, 3), "spy_opt"
+            except Exception as e:
+                log.warning("氛围[期权链P/C]失败: %s", e)
+        try:  # --- NAAIM (周频, 记当日快照; 值域校验防错抓) ---
+            h = self._mood_get("https://naaim.org/programs/naaim-exposure-index/").decode("utf-8", "replace")
+            m = _re.search(r"(?:this week|Current)[^0-9-]{0,40}(-?\d{1,3}\.?\d*)", h, _re.I)
+            if m and -200 <= float(m.group(1)) <= 200:
+                row["naaim"] = float(m.group(1))
+        except Exception as e:
+            log.warning("氛围[NAAIM]失败: %s", e)
+        prev = self.db.get_mood_prev(str(d))
+        self.db.set_mood(str(d), **row)
+        log.info("[%s] 氛围记录 %d 项: %s", d, len(row),
+                 {k: v for k, v in row.items() if k != "pc_src"})
+        mc = self.cfg.get("mood") or {}
+        for msg in self.mood_flips(prev, row, float(mc.get("vix_flip", 19)),
+                                   float(mc.get("term_flip", 1.0)), float(mc.get("vvix_flip", 110))):
+            self.notify.send("🔔 " + msg, "warn")
+
+    @staticmethod
+    def mood_flips(prev, cur, vix_thr=19.0, term_thr=1.0, vvix_thr=110.0):
+        """氛围翻转检测 (纯函数): 昨/今各自与阈值比较, 跨越才报。任一侧缺数据不报。
+        方向语义按用户自己的审计: 上穿=黄金区开启 (该考虑的是把握而非回避)。"""
+        out = []
+        if not prev or not cur:
+            return out
+        def val(d, k):
+            v = d.get(k)
+            return float(v) if v is not None else None
+        def term(d):
+            v, v3 = val(d, "vix"), val(d, "vix3m")
+            return v / v3 if v and v3 else None
+        checks = [
+            (val(prev, "vix"), val(cur, "vix"), vix_thr,
+             "VIX 上穿 {t:g} ({p:.1f}→{c:.1f}) — 历史黄金区开启 (全年审计: VIX≥19 每万 +$140~194)",
+             "VIX 下穿 {t:g} ({p:.1f}→{c:.1f}) — 回到弱区 (收益密度最低的环境)"),
+            (term(prev), term(cur), term_thr,
+             "VIX/VIX3M 倒挂 ({p:.2f}→{c:.2f}) — 近端恐慌, 反转策略最好的环境 (Nagel 2012)",
+             "VIX/VIX3M 解除倒挂 ({p:.2f}→{c:.2f}) — 恐慌回落"),
+            (val(prev, "vvix"), val(cur, "vvix"), vvix_thr,
+             "VVIX 上穿 {t:g} ({p:.0f}→{c:.0f}) — 波动率转折预警 (领先 VIX 本身)",
+             "VVIX 回落穿 {t:g} ({p:.0f}→{c:.0f}) — 转折预警解除"),
+        ]
+        for p, c, thr, up, down in checks:
+            if p is None or c is None:
+                continue
+            if p < thr <= c:
+                out.append(up.format(t=thr, p=p, c=c))
+            elif c < thr <= p:
+                out.append(down.format(t=thr, p=p, c=c))
+        return out
+
     def _ensure_sectors(self, symbols):
         """给一批 symbol 补全板块 (缓存进 sectors 表), 供台账/历史/持仓表显示。
         在 daily_report 里对当日持有/平仓标的调用, 兜住 watch_n=0 时买入票没板块的情况。"""
@@ -777,6 +887,10 @@ class Engine:
             await self._capture_minute_bars(d, extra_syms=watch_syms)
         except Exception as e:
             log.warning("分钟线抓取失败: %s", e)
+        try:  # 观测3: 市场氛围日度序列 — 挂在日报本体, 闸门拦截/无候选的晚上也照记
+            self._tag_mood(d)
+        except Exception as e:
+            log.warning("市场氛围记录失败: %s", e)
         try:  # 观测3: 回填历史候选 (含未买入) 的次日结果
             self._eval_watchlist(d)
         except Exception as e:

@@ -94,6 +94,8 @@
 <main>
   <section id="overview" class="section active">
     <div class="cards" id="ov-cards"></div>
+    <h3 data-tip="每天 16:20 由日报自动记录的日度氛围序列（全部免费源，仅观察不拦截交易）。每项悬停有假设与证据；绿=对本策略有利、黄=过渡/预警、红=风险、灰=平静中性。VIX 上穿 19、期限结构倒挂、VVIX 破 110 时会推送 Discord 翻转提醒（阈值在「配置」页可调）。">🌡 市场氛围 ⓘ <span id="mood-asof" style="color:var(--muted)"></span></h3>
+    <div class="cards" id="mood-cards"><div class="card"><div class="k">氛围数据</div><div class="s">今晚 16:20 首次记录后显示</div></div></div>
     <div class="grid2">
       <div>
         <h3 data-tip="当前未平仓的 lot，现价为 15 分钟延迟行情（每 60 秒刷新）。目标价＝成本×(1+止盈%)，隔夜/盘前/日内的限价卖单都挂在这个价位。">持仓（延迟报价）ⓘ</h3>
@@ -381,7 +383,23 @@ async function header_(){
   };
   return o;
 }
+const MOOD_C = {ok:'var(--green)', warn:'var(--amber)', err:'var(--red)', muted:'var(--muted)'};
+async function loadMood(){
+  const m = await safeJ('/api/mood');
+  if (!m || !m.rows || !m.rows.length) return;   // 无数据保持占位提示
+  $('#mood-asof').textContent = `(${m.as_of}, 已积累 ${m.n_days} 天)`;
+  const cards = m.rows.map(r=>
+    `<div class="card" data-tip="${r.tip}"><div class="k">${r.label}</div>`+
+    `<div class="v" style="color:${MOOD_C[r.state]||'var(--text)'}">${r.value}</div>`+
+    `<div class="s" style="color:${MOOD_C[r.state]||'var(--muted)'}">${r.note}</div></div>`);
+  if (m.composite != null)
+    cards.unshift(`<div class="card" data-tip="${m.composite_tip}"><div class="k">恐慌温度（合成）</div>`+
+      `<div class="v" style="color:${m.composite>=70?'var(--green)':(m.composite>=40?'var(--amber)':'var(--muted)')}">${m.composite}</div>`+
+      `<div class="s">近一年百分位均值 · 高=收益密度区</div></div>`);
+  $('#mood-cards').innerHTML = cards.join('');
+}
 async function loadOverview(){
+  loadMood();
   const o = await header_();
   const [qt, snaps] = await Promise.all([safeJ('/api/quotes'), safeJ('/api/snapshots')]);
   if (!o){ $('#ov-cards').innerHTML = '<div class="card"><div class="k">后端不可用</div><div class="v">—</div></div>'; return; }
@@ -745,6 +763,10 @@ const CFG_GROUPS = [
     ['pre_judg.concurrency','并发判断数','同时跑几个 codex 查询。守护进程、面板、codex 共用一台机器，5 是实测稳定值；上限 6，再高会互相抢资源反而更慢。'],
     ['pre_judg.call_timeout_s','单票超时（秒）','单只股票的裁决查询上限，超时即放弃该票并杀掉子进程（不影响其他票）。中位约 15 秒，默认 140 是留给长尾的；低于 45 秒会把长尾票全判失败、静默削弱覆盖。'],
     ['pre_judg.overall_timeout_s','整体超时（秒）','全部裁决的总时限。安全网：实际用时还会被"距 MOC 提交的剩余时间−90 秒安全边际"硬钳制（余量不足 120 秒则整步跳过、买入照常），所以这里填多大都不可能推迟买入。上限 300＜裁决到提交的 360 秒间隔。']]],
+  ['市场氛围翻转告警（16:20 记录后比对昨/今，仅提醒不拦截）', [
+    ['mood.vix_flip','VIX 翻转线','昨/今跨越该值即推 Discord。默认 19＝全年审计的黄金区分界（VIX≥19 每万 +$140~194，<19 为负）；上穿提醒的含义是"该考虑把握而非回避"。'],
+    ['mood.term_flip','期限结构翻转线 (VIX/VIX3M)','默认 1.0＝倒挂分界。>1 表示近端恐慌超过远端＝反转策略历史最好的环境（Nagel 2012）。'],
+    ['mood.vvix_flip','VVIX 预警线','默认 110。VVIX 是"波动率的波动率"，常领先 VIX 本身启动，破线＝黄金区可能开启的前哨。']]],
   ['风控与通知', [
     ['risk.cushion_alert_pct','保证金缓冲告警线 %','可用资金/净值低于该比例时，盘中每 2 小时推一次强平预警。'],
     ['notify.heartbeat_minutes','心跳间隔 (分钟)','交易时段定时报平安的间隔；0＝关闭心跳（网关断线告警不受影响）。'],

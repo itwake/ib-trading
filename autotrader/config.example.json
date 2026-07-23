@@ -42,6 +42,12 @@
     "call_timeout_s": 140,
     "overall_timeout_s": 270
   },
+  "mood": {
+    "_说明": "市场氛围翻转告警阈值 (16:20 记录 mood_daily 后比对昨/今, 跨越即推 Discord, 仅提醒不拦截)。",
+    "vix_flip": 19,
+    "term_flip": 1.0,
+    "vvix_flip": 110
+  },
   "risk": { "cushion_alert_pct": 12 },
   "flex": { "token": "", "query_id": "" },
   "notify": { "discord_webhook": "", "heartbeat_minutes": 60 },
