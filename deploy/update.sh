@@ -12,6 +12,7 @@ if git diff --name-only "$BEFORE" "$AFTER" | grep -q requirements.txt; then
 fi
 PID_OLD=$(systemctl show -p MainPID --value autotrader)
 systemctl restart autotrader ibtrading-web
+systemctl try-restart gw-sentinel 2>/dev/null || true  # 哨兵装了才重启, 没装不报错
 sleep 3
 systemctl is-active autotrader ibtrading-web
 PID_NEW=$(systemctl show -p MainPID --value autotrader)

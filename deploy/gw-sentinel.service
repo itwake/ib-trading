@@ -1,0 +1,14 @@
+[Unit]
+Description=ib-trading gateway sentinel (watch + auto-recover)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ib-trading
+ExecStart=/opt/ib-trading/.venv/bin/python /opt/ib-trading/deploy/gw_sentinel.py
+Restart=always
+RestartSec=10
+Environment=PYTHONIOENCODING=utf-8
+
+[Install]
+WantedBy=multi-user.target
